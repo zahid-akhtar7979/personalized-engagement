@@ -1,0 +1,7 @@
+categoryid,category_name,parentid
+1,Electronics,
+2,Computers,1
+3,Phones,1
+4,Fashion,
+5,Home,
+6,Sports,

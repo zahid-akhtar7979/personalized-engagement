@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build
+dist/
+bin/
+*.exe
+
+# Env
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+
+# Data (download full Retailrocket dataset separately)
+data/events.csv.full
+data/*.zip
+
+# Logs
+*.log
