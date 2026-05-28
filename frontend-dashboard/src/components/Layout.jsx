@@ -5,6 +5,7 @@ const nav = [
   { to: '/activity', label: 'Live Activity' },
   { to: '/analytics', label: 'Analytics' },
   { to: '/sql', label: 'AI SQL' },
+  { to: '/voice-sql', label: 'Voice SQL' },
   { to: '/replay', label: 'Replay' },
 ]
 

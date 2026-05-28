@@ -1,5 +1,6 @@
 import { useState } from 'react'
-import { runSQLQuery } from '../api/client'
+import { runAIQuery } from '../api/client'
+import QueryResultsTable from '../components/QueryResultsTable'
 
 const EXAMPLES = [
   'Show top retained users',
@@ -18,18 +19,25 @@ export default function SQLAssistant() {
     if (!query.trim()) return
     setLoading(true)
     try {
-      const { data } = await runSQLQuery(query)
-      setResult(data)
+      const { data } = await runAIQuery(query)
+      setResult({
+        generatedSql: data.generatedSql,
+        rows: data.data ?? [],
+        rowCount: data.rowCount ?? (data.data?.length ?? 0),
+        summary: data.summary,
+      })
     } catch (err) {
-      setResult({ generatedSql: '', rows: [{ error: err.message }], rowCount: 0 })
+      setResult({
+        generatedSql: '',
+        rows: [{ error: err.response?.data?.error || err.message }],
+        rowCount: 0,
+      })
     } finally {
       setLoading(false)
     }
   }
 
-  const columns = result?.rows?.length
-    ? Object.keys(result.rows[0])
-    : []
+  const resultRows = result?.rows ?? result?.data ?? []
 
   return (
     <div>
@@ -74,36 +82,8 @@ export default function SQLAssistant() {
         </div>
       )}
 
-      {result?.rows && (
-        <div>
-          <h3 className="text-sm font-semibold text-netflix-muted mb-2">
-            Results ({result.rowCount} rows)
-          </h3>
-          <div className="overflow-x-auto rounded-lg border border-white/5">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-netflix-card">
-                  {columns.map((col) => (
-                    <th key={col} className="px-4 py-2 text-left text-netflix-muted font-medium">
-                      {col}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {result.rows.map((row, i) => (
-                  <tr key={i} className="border-t border-white/5 hover:bg-white/5">
-                    {columns.map((col) => (
-                      <td key={col} className="px-4 py-2">
-                        {String(row[col] ?? '')}
-                      </td>
-                    ))}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+      {result && !loading && (
+        <QueryResultsTable rows={resultRows} title="Results" />
       )}
     </div>
   )

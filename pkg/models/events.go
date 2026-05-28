@@ -92,6 +92,17 @@ type SQLQueryResponse struct {
 	RowCount   int           `json:"rowCount"`
 }
 
+type AIQueryRequest struct {
+	Question string `json:"question"`
+}
+
+type AIQueryResponse struct {
+	GeneratedSQL string                   `json:"generatedSql"`
+	Summary      string                   `json:"summary"`
+	Data         []map[string]interface{} `json:"data"`
+	RowCount     int                      `json:"rowCount"`
+}
+
 type ReplayState struct {
 	Running   bool    `json:"running"`
 	Paused    bool    `json:"paused"`

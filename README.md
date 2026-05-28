@@ -193,8 +193,18 @@ make frontend
 |--------|----------|-------------|
 | GET | `/api/ai/alerts` | Retention analysis alerts |
 | POST | `/api/ai/sql` | Body: `{"question": "..."}` → SQL + results |
+| POST | `/api/ai/query` | Body: `{"question": "..."}` → `{ generatedSql, summary, data }` (voice assistant) |
 
-Set `PEP_USE_MOCK_AI=false` and `OPENAI_API_KEY` for OpenAI-powered SQL generation.
+Set `PEP_USE_MOCK_AI=false` and `OPENAI_API_KEY` for OpenAI-powered SQL generation and voice summaries.
+
+### Voice SQL Assistant
+
+Open **Voice SQL** in the dashboard (`/voice-sql`). Uses Web Speech API + SpeechSynthesis:
+
+1. Tap the microphone and ask e.g. *"Show top retained users"*
+2. Speech → text → `POST /api/ai/query`
+3. OpenAI generates safe `SELECT` SQL (schema-aware) → PostgreSQL executes
+4. Results table + spoken summary (e.g. *"Here are the top retained users."*)
 
 ## Recommendation Engine (Rule-Based)
 

@@ -19,6 +19,7 @@ export const getAnalyticsHistory = () => analytics.get('/api/analytics/history')
 export const getRecommendations = (userId) => recs.get(`/api/recommendations/${userId}`)
 export const getAIAlerts = () => ai.get('/api/ai/alerts')
 export const runSQLQuery = (question) => ai.post('/api/ai/sql', { question })
+export const runAIQuery = (question) => ai.post('/api/ai/query', { question })
 
 export function getWsUrl(userId) {
   const base = import.meta.env.VITE_WS_URL || 'ws://localhost:8083'

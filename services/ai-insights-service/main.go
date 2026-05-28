@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -68,6 +66,7 @@ func main() {
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/api/ai/alerts", svc.getAlerts)
 	r.POST("/api/ai/sql", svc.sqlAssistant)
+	r.POST("/api/ai/query", svc.aiQuery)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {
@@ -221,100 +220,71 @@ func (s *AIInsightsService) sqlAssistant(c *gin.Context) {
 		return
 	}
 
+	if rows == nil {
+		rows = emptyRows()
+	}
 	c.JSON(200, models.SQLQueryResponse{
 		Question: req.Question, GeneratedSQL: sql, Rows: rows, RowCount: len(rows),
 	})
 }
 
 func (s *AIInsightsService) generateSQL(question string) (string, error) {
-	if s.cfg.UseMockAI || s.cfg.OpenAIAPIKey == "" {
-		return mockSQLFromQuestion(question), nil
-	}
-	return s.openAISQL(question)
+	return s.generateSQLWithSchema(question)
 }
 
 func mockSQLFromQuestion(q string) string {
 	lower := strings.ToLower(q)
 	switch {
 	case strings.Contains(lower, "retained") || strings.Contains(lower, "retention"):
-		return `SELECT user_id, COUNT(*) as event_count
-FROM user_events
-GROUP BY user_id
-HAVING COUNT(*) > 3
-ORDER BY event_count DESC
+		return `SELECT u.id AS user_id, u.username,
+  COALESCE(COUNT(e.id), 0) AS event_count
+FROM users u
+LEFT JOIN user_events e ON e.user_id = u.id
+GROUP BY u.id, u.username
+ORDER BY event_count DESC, u.id
 LIMIT 20`
 	case strings.Contains(lower, "conversion") && strings.Contains(lower, "categor"):
-		return `SELECT category_id,
-  SUM(CASE WHEN event_type = 'PURCHASED' THEN 1 ELSE 0 END)::float /
-  NULLIF(SUM(CASE WHEN event_type = 'VIEWED' THEN 1 ELSE 0 END), 0) * 100 as conversion_rate
-FROM user_events
-GROUP BY category_id
-ORDER BY conversion_rate DESC`
+		return `SELECT c.category,
+  COUNT(*) AS item_count,
+  ROUND(AVG(c.price)::numeric, 2) AS avg_price
+FROM content_catalog c
+GROUP BY c.category, c.category_id
+ORDER BY item_count DESC`
 	case strings.Contains(lower, "active") && strings.Contains(lower, "week"):
-		return `SELECT user_id, COUNT(*) as events
-FROM user_events
-WHERE timestamp > NOW() - INTERVAL '7 days'
-GROUP BY user_id
-ORDER BY events DESC
+		return `SELECT u.id AS user_id, u.username,
+  COALESCE(COUNT(e.id), 0) AS events_last_7_days
+FROM users u
+LEFT JOIN user_events e ON e.user_id = u.id
+  AND e.timestamp > NOW() - INTERVAL '7 days'
+GROUP BY u.id, u.username
+ORDER BY events_last_7_days DESC, u.id
 LIMIT 20`
 	case strings.Contains(lower, "purchase"):
-		return `SELECT user_id, item_id, timestamp
-FROM user_events
-WHERE event_type = 'PURCHASED'
-ORDER BY timestamp DESC
+		return `SELECT e.user_id, e.item_id, c.title, e.timestamp
+FROM user_events e
+LEFT JOIN content_catalog c ON c.item_id = e.item_id
+WHERE e.event_type = 'PURCHASED'
+ORDER BY e.timestamp DESC
 LIMIT 50`
+	case strings.Contains(lower, "catalog") || strings.Contains(lower, "product") || strings.Contains(lower, "item"):
+		return `SELECT item_id, title, category, price
+FROM content_catalog
+ORDER BY price DESC
+LIMIT 20`
+	case strings.Contains(lower, "roi") || strings.Contains(lower, "analytics"):
+		return `SELECT retention_rate, ctr, conversion_rate, engagement_score, roi_percentage, active_users, recorded_at
+FROM analytics_metrics
+ORDER BY recorded_at DESC
+LIMIT 20`
 	default:
-		return `SELECT event_type, COUNT(*) as count
-FROM user_events
-GROUP BY event_type
-ORDER BY count DESC`
+		return `SELECT u.id AS user_id, u.username,
+  COALESCE(COUNT(e.id), 0) AS total_events
+FROM users u
+LEFT JOIN user_events e ON e.user_id = u.id
+GROUP BY u.id, u.username
+ORDER BY total_events DESC
+LIMIT 20`
 	}
-}
-
-func (s *AIInsightsService) openAISQL(question string) (string, error) {
-	prompt := fmt.Sprintf(`Convert this business question to a safe PostgreSQL SELECT query.
-Only SELECT statements. Tables: users, user_events, content_catalog, analytics_metrics, recommendations.
-Question: %s
-Return only the SQL.`, question)
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"model": "gpt-4o-mini",
-		"messages": []map[string]string{
-			{"role": "system", "content": "You are a SQL assistant. Return only SELECT queries."},
-			{"role": "user", "content": prompt},
-		},
-		"temperature": 0,
-	})
-
-	req, err := http.NewRequest("POST", "https://api.openai.com/v1/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return mockSQLFromQuestion(question), nil
-	}
-	req.Header.Set("Authorization", "Bearer "+s.cfg.OpenAIAPIKey)
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return mockSQLFromQuestion(question), nil
-	}
-	defer resp.Body.Close()
-
-	data, _ := io.ReadAll(resp.Body)
-	var result struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-	}
-	if err := json.Unmarshal(data, &result); err != nil || len(result.Choices) == 0 {
-		return mockSQLFromQuestion(question), nil
-	}
-	sql := strings.TrimSpace(result.Choices[0].Message.Content)
-	sql = strings.TrimPrefix(sql, "```sql")
-	sql = strings.TrimPrefix(sql, "```")
-	sql = strings.TrimSuffix(sql, "```")
-	return strings.TrimSpace(sql), nil
 }
 
 func (s *AIInsightsService) executeSafeSQL(sql string) ([]map[string]interface{}, error) {
@@ -335,8 +305,12 @@ func (s *AIInsightsService) executeSafeSQL(sql string) ([]map[string]interface{}
 	}
 	defer rows.Close()
 
-	cols, _ := rows.Columns()
-	var results []map[string]interface{}
+	cols, err := rows.Columns()
+	if err != nil {
+		return emptyRows(), err
+	}
+
+	results := emptyRows()
 	for rows.Next() {
 		vals := make([]interface{}, len(cols))
 		ptrs := make([]interface{}, len(cols))
@@ -344,13 +318,16 @@ func (s *AIInsightsService) executeSafeSQL(sql string) ([]map[string]interface{}
 			ptrs[i] = &vals[i]
 		}
 		if err := rows.Scan(ptrs...); err != nil {
-			continue
+			return results, fmt.Errorf("scan row: %w", err)
 		}
-		row := make(map[string]interface{})
+		row := make(map[string]interface{}, len(cols))
 		for i, col := range cols {
-			row[col] = vals[i]
+			row[col] = normalizeDBValue(vals[i])
 		}
 		results = append(results, row)
+	}
+	if err := rows.Err(); err != nil {
+		return results, err
 	}
 	return results, nil
 }
