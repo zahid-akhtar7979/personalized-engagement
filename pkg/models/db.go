@@ -56,3 +56,5 @@ type AnalyticsMetricRecord struct {
 	ActiveUsers     int64
 	RecordedAt      time.Time `gorm:"index"`
 }
+
+func (AnalyticsMetricRecord) TableName() string { return "analytics_metrics" }

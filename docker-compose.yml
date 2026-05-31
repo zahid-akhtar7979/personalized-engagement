@@ -36,8 +36,10 @@ services:
     ports:
       - "5432:5432"
     volumes:
+      - postgres_data:/var/lib/postgresql/data
       - ./migrations/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql
-      - ./migrations/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql
+      - ./migrations/load-data.sql:/docker-entrypoint-initdb.d/03-load-data.sql
+      - ${DATA_IMPORT_PATH:-/Users/zahidakhtar/Documents/data}:/import-data:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pep"]
       interval: 5s
@@ -48,6 +50,8 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -63,9 +67,9 @@ services:
     environment:
       PEP_PORT: "8081"
       PEP_KAFKA_BROKERS: kafka:29092
-      PEP_EVENTS_CSV_PATH: /data/events.csv
+      PEP_EVENTS_CSV_PATH: /import-data/events.csv
     volumes:
-      - ./data:/data:ro
+      - ${DATA_IMPORT_PATH:-/Users/zahidakhtar/Documents/data}:/import-data:ro
     ports:
       - "8081:8081"
     depends_on:
@@ -176,3 +180,9 @@ services:
       ai-insights:
         condition: service_started
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: pep_postgres_data
+  redis_data:
+    name: pep_redis_data

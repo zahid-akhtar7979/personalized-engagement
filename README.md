@@ -72,8 +72,7 @@ flowchart LR
 │   └── ai-insights-service/        # Retention agent + SQL assistant
 ├── frontend-dashboard/             # React Netflix-style UI
 ├── pkg/                            # Shared config, kafka, models, redis
-├── migrations/                     # schema.sql + seed.sql
-├── data/                           # Sample events.csv (replace with Kaggle dataset)
+├── migrations/                     # schema.sql + load-data.sql (Retailrocket import)
 └── docker-compose.yml
 ```
 
@@ -88,6 +87,26 @@ flowchart LR
 
 ```bash
 docker compose up --build
+```
+
+### Data persistence
+
+PostgreSQL and Redis use **named Docker volumes** so replayed events and analytics survive service rebuilds:
+
+| Volume | Mount | Holds |
+|--------|-------|-------|
+| `pep_postgres_data` | `/var/lib/postgresql/data` | Retailrocket users, events, catalog, analytics |
+| `pep_redis_data` | `/data` | Cached dashboards, analytics snapshots |
+
+- `docker compose up --build -d ai-insights frontend` — **does not** delete database data (only rebuilds those services).
+- `docker compose down` — keeps volumes; data remains.
+- `docker compose down -v` — **wipes all persisted data** (use only when you want a fresh DB).
+
+Schema/seed scripts in `migrations/` run **only on first volume init** (empty database). To reset completely:
+
+```bash
+docker compose down -v
+docker compose up --build -d
 ```
 
 | Service | URL |
@@ -108,21 +127,58 @@ docker compose up --build
 5. Open **Analytics** → retention, CTR, conversion, ROI charts refresh every 3s
 6. Open **AI SQL** → try *"Show top retained users"* or *"Show highest conversion categories"*
 
-## Dataset Setup
+## Dataset Setup (Retailrocket — real PostgreSQL data)
 
-A **sample** `data/events.csv` (30 events) is included for immediate demo.
+Place the full [Retailrocket dataset](https://www.kaggle.com/retailrocket/ecommerce-dataset) CSV files on your host:
 
-For the full [Retailrocket Ecommerce Dataset](https://www.kaggle.com/retailrocket/ecommerce-dataset):
-
-```bash
-# Configure Kaggle API (~/.kaggle/kaggle.json)
-chmod +x scripts/download-dataset.sh
-./scripts/download-dataset.sh
+```
+/Users/zahidakhtar/Documents/data/   (or set DATA_IMPORT_PATH in .env)
+├── events.csv
+├── category_tree.csv
+├── item_properties_part1.csv
+└── item_properties_part2.csv
 ```
 
-Files used:
-- `events.csv` (required)
-- `item_properties.csv`, `category_tree.csv` (optional enrichment)
+On **first PostgreSQL startup**, Docker runs:
+
+1. `migrations/schema.sql` — tables
+2. `migrations/load-data.sql` — `COPY` CSVs → staging → `users`, `categories`, `content_catalog`, `user_events`, `recommendations`, `analytics_metrics`
+
+**First load takes several minutes** (~900MB item property files).
+
+### Fresh database with real data
+
+```bash
+docker compose down
+docker volume rm pep_postgres_data
+docker compose up -d postgres
+docker compose logs -f postgres   # wait until "database system is ready"
+```
+
+Verify:
+
+```bash
+docker exec -it $(docker compose ps -q postgres) psql -U pep -d pep -c "SELECT COUNT(*) FROM users;"
+docker exec -it $(docker compose ps -q postgres) psql -U pep -d pep -c "SELECT COUNT(*) FROM user_events;"
+docker exec -it $(docker compose ps -q postgres) psql -U pep -d pep -c "SELECT COUNT(*) FROM content_catalog;"
+```
+
+Then start all services:
+
+```bash
+docker compose up -d
+```
+
+- **Replay** streams `/import-data/events.csv` (same Retailrocket file)
+- **AI SQL / Voice SQL** queries real `user_events` in PostgreSQL
+- **Dashboard** user dropdown loads top users from Postgres (`GET /api/users/sample`)
+
+Override data path:
+
+```bash
+export DATA_IMPORT_PATH=/path/to/your/csv/folder
+docker compose up -d postgres
+```
 
 ## Local Development (without rebuilding all services)
 

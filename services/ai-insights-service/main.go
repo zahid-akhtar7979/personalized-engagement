@@ -236,28 +236,32 @@ func mockSQLFromQuestion(q string) string {
 	lower := strings.ToLower(q)
 	switch {
 	case strings.Contains(lower, "retained") || strings.Contains(lower, "retention"):
-		return `SELECT u.id AS user_id, u.username,
-  COALESCE(COUNT(e.id), 0) AS event_count
-FROM users u
-LEFT JOIN user_events e ON e.user_id = u.id
-GROUP BY u.id, u.username
-ORDER BY event_count DESC, u.id
+		return `SELECT user_id, COUNT(*) AS event_count
+FROM user_events
+GROUP BY user_id
+HAVING COUNT(*) > 3
+ORDER BY event_count DESC
 LIMIT 20`
 	case strings.Contains(lower, "conversion") && strings.Contains(lower, "categor"):
-		return `SELECT c.category,
-  COUNT(*) AS item_count,
-  ROUND(AVG(c.price)::numeric, 2) AS avg_price
-FROM content_catalog c
-GROUP BY c.category, c.category_id
-ORDER BY item_count DESC`
+		return `SELECT e.category_id,
+  COALESCE(c.name, 'Category-' || e.category_id::TEXT) AS category_name,
+  ROUND(
+    SUM(CASE WHEN e.event_type = 'PURCHASED' THEN 1 ELSE 0 END)::numeric /
+    NULLIF(SUM(CASE WHEN e.event_type = 'VIEWED' THEN 1 ELSE 0 END), 0) * 100,
+    2
+  ) AS conversion_rate
+FROM user_events e
+LEFT JOIN categories c ON c.id = e.category_id
+WHERE e.category_id IS NOT NULL
+GROUP BY e.category_id, c.name
+ORDER BY conversion_rate DESC NULLS LAST
+LIMIT 20`
 	case strings.Contains(lower, "active") && strings.Contains(lower, "week"):
-		return `SELECT u.id AS user_id, u.username,
-  COALESCE(COUNT(e.id), 0) AS events_last_7_days
-FROM users u
-LEFT JOIN user_events e ON e.user_id = u.id
-  AND e.timestamp > NOW() - INTERVAL '7 days'
-GROUP BY u.id, u.username
-ORDER BY events_last_7_days DESC, u.id
+		return `SELECT user_id, COUNT(*) AS events_last_7_days
+FROM user_events
+WHERE timestamp > NOW() - INTERVAL '7 days'
+GROUP BY user_id
+ORDER BY events_last_7_days DESC
 LIMIT 20`
 	case strings.Contains(lower, "purchase"):
 		return `SELECT e.user_id, e.item_id, c.title, e.timestamp
@@ -277,11 +281,9 @@ FROM analytics_metrics
 ORDER BY recorded_at DESC
 LIMIT 20`
 	default:
-		return `SELECT u.id AS user_id, u.username,
-  COALESCE(COUNT(e.id), 0) AS total_events
-FROM users u
-LEFT JOIN user_events e ON e.user_id = u.id
-GROUP BY u.id, u.username
+		return `SELECT user_id, COUNT(*) AS total_events
+FROM user_events
+GROUP BY user_id
 ORDER BY total_events DESC
 LIMIT 20`
 	}

@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import RecommendationRow from '../components/RecommendationRow'
-import { getDashboard } from '../api/client'
+import { getDashboard, getSampleUsers } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
-
-const USERS = [1, 2, 3, 4, 5]
 
 const emptyRecs = {
   recommendedForYou: [],
@@ -13,12 +11,26 @@ const emptyRecs = {
 }
 
 export default function Dashboard() {
-  const [userId, setUserId] = useState(1)
+  const [users, setUsers] = useState([])
+  const [userId, setUserId] = useState(null)
   const [recs, setRecs] = useState(emptyRecs)
   const [updatedAt, setUpdatedAt] = useState(null)
   const [pulse, setPulse] = useState(false)
 
+  useEffect(() => {
+    getSampleUsers()
+      .then(({ data }) => {
+        const list = Array.isArray(data) ? data : []
+        setUsers(list)
+        if (list.length > 0) {
+          setUserId(list[0].userId)
+        }
+      })
+      .catch(() => setUsers([]))
+  }, [])
+
   const loadDashboard = useCallback(async () => {
+    if (!userId) return
     try {
       const { data } = await getDashboard(userId)
       if (data?.recommendations) {
@@ -41,7 +53,7 @@ export default function Dashboard() {
     }
   }, [])
 
-  const { connected } = useWebSocket(userId, onWsMessage)
+  const { connected } = useWebSocket(userId ?? 0, onWsMessage)
 
   return (
     <div>
@@ -49,7 +61,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-2xl font-bold">For You</h1>
           <p className="text-netflix-muted text-sm mt-1">
-            Real-time personalized recommendations
+            Real-time personalized recommendations (Retailrocket users)
             {updatedAt && (
               <span className="ml-2">
                 · Updated {new Date(updatedAt).toLocaleTimeString()}
@@ -66,15 +78,20 @@ export default function Dashboard() {
             {connected ? '● Live' : '○ Reconnecting'}
           </span>
           <select
-            value={userId}
+            value={userId ?? ''}
             onChange={(e) => setUserId(Number(e.target.value))}
-            className="bg-netflix-card border border-white/10 rounded px-3 py-2 text-sm"
+            disabled={users.length === 0}
+            className="bg-netflix-card border border-white/10 rounded px-3 py-2 text-sm max-w-[220px]"
           >
-            {USERS.map((id) => (
-              <option key={id} value={id}>
-                User {id}
-              </option>
-            ))}
+            {users.length === 0 ? (
+              <option value="">Loading users…</option>
+            ) : (
+              users.map((u) => (
+                <option key={u.userId} value={u.userId}>
+                  {u.username} ({u.eventCount} events)
+                </option>
+              ))
+            )}
           </select>
         </div>
       </div>

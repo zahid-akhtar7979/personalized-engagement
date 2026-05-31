@@ -1,7 +1,7 @@
 -- Real-Time Personalized Engagement Platform Schema
 
 CREATE TABLE IF NOT EXISTS users (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT PRIMARY KEY,
     username VARCHAR(255) UNIQUE NOT NULL,
     email VARCHAR(255),
     created_at TIMESTAMPTZ DEFAULT NOW(),
@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS categories (
-    id BIGSERIAL PRIMARY KEY,
+    id BIGINT PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     parent_id BIGINT REFERENCES categories(id)
 );

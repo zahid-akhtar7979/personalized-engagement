@@ -76,6 +76,7 @@ func main() {
 	r.Use(corsMiddleware())
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/api/recommendations/:userId", engine.getRecommendations)
+	r.GET("/api/users/sample", engine.getSampleUsers)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {
@@ -112,30 +113,12 @@ func (e *RecommendationEngine) loadCatalog() {
 	var items []models.ContentCatalog
 	e.db.Find(&items)
 	for _, item := range items {
+		if item.ImageURL == "" {
+			item.ImageURL = fmt.Sprintf("https://picsum.photos/seed/%d/300/200", item.ItemID)
+		}
 		e.catalog[item.ItemID] = item
 	}
-	if len(e.catalog) == 0 {
-		fallback := []models.ContentCatalog{
-			{ItemID: 1001, Title: "Pro Laptop 15\"", Category: "Computers", CategoryID: 2, Price: 1299.99, ImageURL: "https://picsum.photos/seed/laptop/300/200"},
-			{ItemID: 1002, Title: "Wireless Mouse", Category: "Computers", CategoryID: 2, Price: 49.99, ImageURL: "https://picsum.photos/seed/mouse/300/200"},
-			{ItemID: 1003, Title: "USB-C Hub", Category: "Computers", CategoryID: 2, Price: 79.99, ImageURL: "https://picsum.photos/seed/hub/300/200"},
-			{ItemID: 1004, Title: "Smartphone X", Category: "Phones", CategoryID: 3, Price: 899.99, ImageURL: "https://picsum.photos/seed/phone/300/200"},
-			{ItemID: 1005, Title: "Phone Case", Category: "Phones", CategoryID: 3, Price: 24.99, ImageURL: "https://picsum.photos/seed/case/300/200"},
-			{ItemID: 1006, Title: "Running Shoes", Category: "Sports", CategoryID: 6, Price: 129.99, ImageURL: "https://picsum.photos/seed/shoes/300/200"},
-			{ItemID: 1007, Title: "Yoga Mat", Category: "Sports", CategoryID: 6, Price: 39.99, ImageURL: "https://picsum.photos/seed/yoga/300/200"},
-			{ItemID: 1008, Title: "Desk Lamp", Category: "Home", CategoryID: 5, Price: 59.99, ImageURL: "https://picsum.photos/seed/lamp/300/200"},
-			{ItemID: 1009, Title: "Coffee Maker", Category: "Home", CategoryID: 5, Price: 89.99, ImageURL: "https://picsum.photos/seed/coffee/300/200"},
-			{ItemID: 1010, Title: "Winter Jacket", Category: "Fashion", CategoryID: 4, Price: 199.99, ImageURL: "https://picsum.photos/seed/jacket/300/200"},
-			{ItemID: 1011, Title: "Bluetooth Headphones", Category: "Electronics", CategoryID: 1, Price: 149.99, ImageURL: "https://picsum.photos/seed/headphones/300/200"},
-			{ItemID: 1012, Title: "4K Monitor", Category: "Computers", CategoryID: 2, Price: 449.99, ImageURL: "https://picsum.photos/seed/monitor/300/200"},
-			{ItemID: 1013, Title: "Fitness Tracker", Category: "Sports", CategoryID: 6, Price: 79.99, ImageURL: "https://picsum.photos/seed/tracker/300/200"},
-			{ItemID: 1014, Title: "Smart Watch", Category: "Phones", CategoryID: 3, Price: 299.99, ImageURL: "https://picsum.photos/seed/watch/300/200"},
-			{ItemID: 1015, Title: "Tablet Pro", Category: "Computers", CategoryID: 2, Price: 599.99, ImageURL: "https://picsum.photos/seed/tablet/300/200"},
-		}
-		for _, item := range fallback {
-			e.catalog[item.ItemID] = item
-		}
-	}
+	e.log.Info("catalog loaded from postgres", zap.Int("items", len(e.catalog)))
 }
 
 func (e *RecommendationEngine) getProfile(userID int64) *UserProfile {
@@ -395,4 +378,30 @@ func (e *RecommendationEngine) cartBased(p *UserProfile, limit int) []models.Rec
 func (e *RecommendationEngine) getRecommendations(c *gin.Context) {
 	userID, _ := strconv.ParseInt(c.Param("userId"), 10, 64)
 	c.JSON(200, e.buildRecommendations(userID))
+}
+
+func (e *RecommendationEngine) getSampleUsers(c *gin.Context) {
+	type row struct {
+		UserID     int64  `gorm:"column:user_id"`
+		EventCount int64  `gorm:"column:event_count"`
+		Username   string `gorm:"column:username"`
+	}
+	var rows []row
+	e.db.Raw(`
+		SELECT u.id AS user_id, COUNT(e.id) AS event_count, u.username
+		FROM users u
+		INNER JOIN user_events e ON e.user_id = u.id
+		GROUP BY u.id, u.username
+		ORDER BY event_count DESC
+		LIMIT 20
+	`).Scan(&rows)
+	if len(rows) == 0 {
+		c.JSON(200, []row{})
+		return
+	}
+	out := make([]gin.H, len(rows))
+	for i, r := range rows {
+		out[i] = gin.H{"userId": r.UserID, "eventCount": r.EventCount, "username": r.Username}
+	}
+	c.JSON(200, out)
 }
