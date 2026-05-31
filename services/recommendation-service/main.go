@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"personalized-engagement/pkg/catalog"
 	"personalized-engagement/pkg/config"
 	pdb "personalized-engagement/pkg/db"
 	"personalized-engagement/pkg/kafka"
@@ -114,9 +115,7 @@ func (e *RecommendationEngine) loadCatalog() {
 	var items []models.ContentCatalog
 	e.db.Find(&items)
 	for _, item := range items {
-		if item.ImageURL == "" {
-			item.ImageURL = fmt.Sprintf("https://picsum.photos/seed/%d/300/200", item.ItemID)
-		}
+		item.ImageURL = catalog.ProductImageURL(item.ItemID, item.Category)
 		e.catalog[item.ItemID] = item
 	}
 	e.log.Info("catalog loaded from postgres", zap.Int("items", len(e.catalog)))
@@ -220,11 +219,12 @@ func (e *RecommendationEngine) buildRecommendations(userID int64) models.Persona
 			CategoryCounts: make(map[int64]int),
 		}
 	}
+	picker := catalog.NewImagePicker()
 	return models.PersonalizedRecs{
-		RecommendedForYou:   e.trendingInPreferredCategories(p, 6),
-		TrendingNow:         e.globalTrending(6),
-		BecauseYouViewed:    e.becauseYouViewed(p, 6),
-		CartRecommendations: e.cartBased(p, 6),
+		RecommendedForYou:   e.trendingInPreferredCategories(p, 6, picker),
+		TrendingNow:         e.globalTrending(6, picker),
+		BecauseYouViewed:    e.becauseYouViewed(p, 6, picker),
+		CartRecommendations: e.cartBased(p, 6, picker),
 	}
 }
 
@@ -239,28 +239,24 @@ func (e *RecommendationEngine) ensureCatalogItem(itemID int64) {
 	if err := e.db.Where("item_id = ?", itemID).First(&item).Error; err != nil {
 		return
 	}
-	if item.ImageURL == "" {
-		item.ImageURL = fmt.Sprintf("https://picsum.photos/seed/%d/300/200", item.ItemID)
-	}
+	item.ImageURL = catalog.ProductImageURL(item.ItemID, item.Category)
 	e.mu.Lock()
 	e.catalog[itemID] = item
 	e.mu.Unlock()
 }
 
-func (e *RecommendationEngine) itemToRec(itemID int64, score float64, reason string) models.Recommendation {
+func (e *RecommendationEngine) itemToRec(itemID int64, score float64, reason string, picker *catalog.ImagePicker) models.Recommendation {
 	e.ensureCatalogItem(itemID)
 	item, ok := e.catalog[itemID]
-	title, category, imageURL := fmt.Sprintf("Product-%d", itemID), "General", fmt.Sprintf("https://picsum.photos/seed/%d/300/200", itemID)
+	title, category := fmt.Sprintf("Product-%d", itemID), "General"
 	if ok {
 		title, category = item.Title, item.Category
-		if item.ImageURL != "" {
-			imageURL = item.ImageURL
-		}
 	}
+	imageURL := picker.URL(itemID, category)
 	return models.Recommendation{ItemID: itemID, Title: title, Category: category, Score: score, Reason: reason, ImageURL: imageURL}
 }
 
-func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, limit int) []models.Recommendation {
+func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, limit int, picker *catalog.ImagePicker) []models.Recommendation {
 	type scored struct {
 		itemID int64
 		score  float64
@@ -335,12 +331,12 @@ func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, lim
 			continue
 		}
 		seen[s.itemID] = true
-		recs = append(recs, e.itemToRec(s.itemID, s.score, "Trending in your preferred categories"))
+		recs = append(recs, e.itemToRec(s.itemID, s.score, "Trending in your preferred categories", picker))
 	}
 	return recs
 }
 
-func (e *RecommendationEngine) globalTrending(limit int) []models.Recommendation {
+func (e *RecommendationEngine) globalTrending(limit int, picker *catalog.ImagePicker) []models.Recommendation {
 	type kv struct {
 		id, count int64
 	}
@@ -357,12 +353,12 @@ func (e *RecommendationEngine) globalTrending(limit int) []models.Recommendation
 		if i >= limit {
 			break
 		}
-		recs = append(recs, e.itemToRec(kv.id, float64(kv.count), "Trending now across platform"))
+		recs = append(recs, e.itemToRec(kv.id, float64(kv.count), "Trending now across platform", picker))
 	}
 	return recs
 }
 
-func (e *RecommendationEngine) becauseYouViewed(p *UserProfile, limit int) []models.Recommendation {
+func (e *RecommendationEngine) becauseYouViewed(p *UserProfile, limit int, picker *catalog.ImagePicker) []models.Recommendation {
 	var lastViewed int64
 	maxViews := 0
 	for itemID, count := range p.ViewedItems {
@@ -401,19 +397,19 @@ func (e *RecommendationEngine) becauseYouViewed(p *UserProfile, limit int) []mod
 		if i >= limit {
 			break
 		}
-		recs = append(recs, e.itemToRec(r.id, float64(r.count), "Because you viewed "+viewedTitle))
+		recs = append(recs, e.itemToRec(r.id, float64(r.count), "Because you viewed "+viewedTitle, picker))
 	}
 	if len(recs) == 0 && item.CategoryID > 0 {
 		for id, catItem := range e.catalog {
 			if id != lastViewed && catItem.CategoryID == item.CategoryID && len(recs) < limit {
-				recs = append(recs, e.itemToRec(id, 1.0, "Because you viewed "+viewedTitle))
+				recs = append(recs, e.itemToRec(id, 1.0, "Because you viewed "+viewedTitle, picker))
 			}
 		}
 	}
 	return recs
 }
 
-func (e *RecommendationEngine) cartBased(p *UserProfile, limit int) []models.Recommendation {
+func (e *RecommendationEngine) cartBased(p *UserProfile, limit int, picker *catalog.ImagePicker) []models.Recommendation {
 	if len(p.CartItems) == 0 {
 		return nil
 	}
@@ -432,7 +428,7 @@ func (e *RecommendationEngine) cartBased(p *UserProfile, limit int) []models.Rec
 			continue
 		}
 		if catItem.CategoryID == item.CategoryID {
-			recs = append(recs, e.itemToRec(id, 2.0, "Frequently bought with cart items"))
+			recs = append(recs, e.itemToRec(id, 2.0, "Frequently bought with cart items", picker))
 			if len(recs) >= limit {
 				break
 			}

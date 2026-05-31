@@ -1,4 +1,12 @@
-export default function RecommendationCard({ item, onClick }) {
+import { productImageUrl } from '../utils/productImages'
+
+export default function RecommendationCard({ item, onClick, slot = 0, usedImages }) {
+  const imageSrc =
+    item.imageUrl && !usedImages?.has(item.imageUrl)
+      ? item.imageUrl
+      : productImageUrl(item.itemId, item.category, slot, usedImages)
+
+  if (usedImages && imageSrc) usedImages.add(imageSrc)
   return (
     <div
       onClick={onClick}
@@ -6,7 +14,7 @@ export default function RecommendationCard({ item, onClick }) {
     >
       <div className="relative overflow-hidden rounded-lg bg-netflix-card aspect-[3/2] transition-transform duration-300 group-hover:scale-105 group-hover:shadow-xl group-hover:shadow-netflix-accent/20">
         <img
-          src={item.imageUrl || `https://picsum.photos/seed/${item.itemId}/300/200`}
+          src={imageSrc}
           alt={item.title}
           className="w-full h-full object-cover"
           loading="lazy"

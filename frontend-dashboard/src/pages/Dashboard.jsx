@@ -107,7 +107,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     loadDashboard()
-    const t = setInterval(loadDashboard, 3000)
+    const t = setInterval(loadDashboard, 10000)
     return () => clearInterval(t)
   }, [loadDashboard])
 

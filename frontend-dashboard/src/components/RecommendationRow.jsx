@@ -1,6 +1,8 @@
+import { useMemo } from 'react'
 import RecommendationCard from './RecommendationCard'
 
 export default function RecommendationRow({ title, items = [] }) {
+  const usedImages = useMemo(() => new Set(), [items])
   if (!items?.length) {
     return (
       <section className="mb-8 animate-slide-up">
@@ -17,8 +19,13 @@ export default function RecommendationRow({ title, items = [] }) {
         <span className="text-xs font-normal text-netflix-muted">({items.length})</span>
       </h2>
       <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-thin">
-        {items.map((item) => (
-          <RecommendationCard key={`${title}-${item.itemId}`} item={item} />
+        {items.map((item, index) => (
+          <RecommendationCard
+            key={`${title}-${item.itemId}-${index}`}
+            item={item}
+            slot={index}
+            usedImages={usedImages}
+          />
         ))}
       </div>
     </section>
