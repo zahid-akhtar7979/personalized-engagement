@@ -8,8 +8,10 @@ const ai = axios.create({ baseURL: import.meta.env.VITE_AI_URL || 'http://localh
 
 export const getReplayStatus = () => replay.get('/api/replay/status')
 export const startReplay = () => replay.post('/api/replay/start')
+export const nextReplayBatch = () => replay.post('/api/replay/next-batch')
 export const pauseReplay = () => replay.post('/api/replay/pause')
 export const resumeReplay = () => replay.post('/api/replay/resume')
+export const resetReplay = () => replay.post('/api/replay/reset')
 export const setReplaySpeed = (speed) => replay.put('/api/replay/speed', { speed })
 
 export const getDashboard = (userId) => engagement.get(`/api/dashboard/${userId}`)

@@ -104,9 +104,12 @@ type AIQueryResponse struct {
 }
 
 type ReplayState struct {
-	Running   bool    `json:"running"`
-	Paused    bool    `json:"paused"`
-	Speed     float64 `json:"speed"`
-	Processed int64   `json:"processed"`
-	Total     int64   `json:"total"`
+	Running      bool    `json:"running"`
+	Paused       bool    `json:"paused"`
+	Speed        float64 `json:"speed"`
+	Processed    int64   `json:"processed"`
+	Total        int64   `json:"total"`
+	BatchSize    int     `json:"batchSize"`
+	LastBatchEnd int64   `json:"lastBatchEnd"`
+	HasMore      bool    `json:"hasMore"`
 }
