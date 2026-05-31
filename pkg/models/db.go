@@ -11,14 +11,16 @@ type User struct {
 }
 
 type ContentCatalog struct {
-	ID         int64   `gorm:"primaryKey"`
-	ItemID     int64   `gorm:"uniqueIndex"`
+	ID         int64   `gorm:"primaryKey;column:id"`
+	ItemID     int64   `gorm:"uniqueIndex;column:item_id"`
 	Title      string
 	CategoryID int64
 	Category   string
 	Price      float64
 	ImageURL   string
 }
+
+func (ContentCatalog) TableName() string { return "content_catalog" }
 
 type Category struct {
 	ID       int64 `gorm:"primaryKey"`
@@ -36,6 +38,8 @@ type UserEventRecord struct {
 	Timestamp  time.Time `gorm:"index"`
 }
 
+func (UserEventRecord) TableName() string { return "user_events" }
+
 type RecommendationRecord struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement"`
 	UserID    int64     `gorm:"index"`
@@ -45,6 +49,8 @@ type RecommendationRecord struct {
 	Section   string
 	CreatedAt time.Time
 }
+
+func (RecommendationRecord) TableName() string { return "recommendations" }
 
 type AnalyticsMetricRecord struct {
 	ID              int64     `gorm:"primaryKey;autoIncrement"`

@@ -168,8 +168,9 @@ func (o *Orchestrator) consumeRecommendations(ctx context.Context) {
 			continue
 		}
 
+		recs := models.NormalizeRecs(rec.Recommendations)
 		dashboard := models.DashboardPayload{
-			UserID: rec.UserID, Recommendations: rec.Recommendations,
+			UserID: rec.UserID, Recommendations: recs,
 			UpdatedAt: time.Now().UTC(),
 		}
 
@@ -268,12 +269,13 @@ func (o *Orchestrator) getDashboard(c *gin.Context) {
 	var dashboard models.DashboardPayload
 	if err := o.redis.GetDashboard(c.Request.Context(), userID, &dashboard); err != nil {
 		c.JSON(200, models.DashboardPayload{
-			UserID: userID,
-			Recommendations: models.PersonalizedRecs{},
-			UpdatedAt: time.Now().UTC(),
+			UserID:          userID,
+			Recommendations: models.NormalizeRecs(models.PersonalizedRecs{}),
+			UpdatedAt:       time.Now().UTC(),
 		})
 		return
 	}
+	dashboard.Recommendations = models.NormalizeRecs(dashboard.Recommendations)
 	c.JSON(200, dashboard)
 }
 

@@ -88,6 +88,7 @@ services:
       PEP_POSTGRES_DSN: "host=postgres user=pep password=pep123 dbname=pep port=5432 sslmode=disable"
     ports:
       - "8082:8082"
+    restart: unless-stopped
     depends_on:
       kafka:
         condition: service_healthy
@@ -161,11 +162,13 @@ services:
       context: ./frontend-dashboard
       dockerfile: Dockerfile
       args:
-        VITE_REPLAY_URL: http://localhost:8081
-        VITE_ENGAGEMENT_URL: http://localhost:8083
-        VITE_ANALYTICS_URL: http://localhost:8084
-        VITE_AI_URL: http://localhost:8085
-        VITE_WS_URL: ws://localhost:8083
+        # Empty = same-origin; nginx proxies /api/* and /ws/* to backend containers.
+        VITE_REPLAY_URL: ""
+        VITE_RECS_URL: ""
+        VITE_ENGAGEMENT_URL: ""
+        VITE_ANALYTICS_URL: ""
+        VITE_AI_URL: ""
+        VITE_WS_URL: ""
     ports:
       - "3000:80"
     depends_on:

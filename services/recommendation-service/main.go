@@ -77,6 +77,7 @@ func main() {
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
 	r.GET("/api/recommendations/:userId", engine.getRecommendations)
 	r.GET("/api/users/sample", engine.getSampleUsers)
+	r.GET("/api/users/active", engine.getActiveReplayUsers)
 
 	srv := &http.Server{Addr: ":" + cfg.Port, Handler: r}
 	go func() {
@@ -191,7 +192,7 @@ func (e *RecommendationEngine) processEvent(ctx context.Context, ev models.UserE
 		CategoryID: ev.CategoryID, EventType: ev.EventType, Timestamp: ev.Timestamp,
 	}).Error
 
-	recs := e.buildRecommendations(ev.UserID)
+	recs := models.NormalizeRecs(e.buildRecommendations(ev.UserID))
 	recEvent := models.RecommendationEvent{
 		UserID: ev.UserID, Recommendations: recs, Timestamp: time.Now().UTC(),
 	}
@@ -227,9 +228,29 @@ func (e *RecommendationEngine) buildRecommendations(userID int64) models.Persona
 	}
 }
 
+func (e *RecommendationEngine) ensureCatalogItem(itemID int64) {
+	e.mu.RLock()
+	_, ok := e.catalog[itemID]
+	e.mu.RUnlock()
+	if ok {
+		return
+	}
+	var item models.ContentCatalog
+	if err := e.db.Where("item_id = ?", itemID).First(&item).Error; err != nil {
+		return
+	}
+	if item.ImageURL == "" {
+		item.ImageURL = fmt.Sprintf("https://picsum.photos/seed/%d/300/200", item.ItemID)
+	}
+	e.mu.Lock()
+	e.catalog[itemID] = item
+	e.mu.Unlock()
+}
+
 func (e *RecommendationEngine) itemToRec(itemID int64, score float64, reason string) models.Recommendation {
+	e.ensureCatalogItem(itemID)
 	item, ok := e.catalog[itemID]
-	title, category, imageURL := "Item", "General", "https://picsum.photos/seed/item/300/200"
+	title, category, imageURL := fmt.Sprintf("Product-%d", itemID), "General", fmt.Sprintf("https://picsum.photos/seed/%d/300/200", itemID)
 	if ok {
 		title, category = item.Title, item.Category
 		if item.ImageURL != "" {
@@ -244,7 +265,6 @@ func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, lim
 		itemID int64
 		score  float64
 	}
-	var results []scored
 	seen := make(map[int64]bool)
 	for itemID := range p.ViewedItems {
 		seen[itemID] = true
@@ -253,19 +273,56 @@ func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, lim
 		seen[itemID] = true
 	}
 
+	topCats := make(map[int64]int)
+	for catID, count := range p.CategoryCounts {
+		if count > 0 {
+			topCats[catID] = count
+		}
+	}
+
+	var results []scored
 	e.mu.RLock()
 	for itemID, views := range e.global.itemViews {
-		item, ok := e.catalog[itemID]
-		if !ok || seen[itemID] {
+		if seen[itemID] {
 			continue
 		}
-		catBoost := float64(p.CategoryCounts[item.CategoryID])
+		catID := itemID%6 + 1
+		if item, ok := e.catalog[itemID]; ok {
+			catID = item.CategoryID
+		}
+		catBoost := float64(topCats[catID])
 		if catBoost == 0 {
-			catBoost = 0.5
+			continue
 		}
 		results = append(results, scored{itemID, float64(views) * catBoost})
 	}
 	e.mu.RUnlock()
+
+	// Fallback: suggest unseen catalog items in the user's top categories.
+	if len(results) < limit {
+		type catKV struct {
+			id, count int
+		}
+		var cats []catKV
+		for id, c := range topCats {
+			cats = append(cats, catKV{int(id), c})
+		}
+		sort.Slice(cats, func(i, j int) bool { return cats[i].count > cats[j].count })
+
+		e.mu.RLock()
+		for _, cat := range cats {
+			for itemID, item := range e.catalog {
+				if seen[itemID] || item.CategoryID != int64(cat.id) {
+					continue
+				}
+				results = append(results, scored{itemID, float64(cat.count)})
+				if len(results) >= limit*3 {
+					break
+				}
+			}
+		}
+		e.mu.RUnlock()
+	}
 
 	sort.Slice(results, func(i, j int) bool { return results[i].score > results[j].score })
 
@@ -274,6 +331,10 @@ func (e *RecommendationEngine) trendingInPreferredCategories(p *UserProfile, lim
 		if len(recs) >= limit {
 			break
 		}
+		if seen[s.itemID] {
+			continue
+		}
+		seen[s.itemID] = true
 		recs = append(recs, e.itemToRec(s.itemID, s.score, "Trending in your preferred categories"))
 	}
 	return recs
@@ -329,18 +390,23 @@ func (e *RecommendationEngine) becauseYouViewed(p *UserProfile, limit int) []mod
 	}
 	sort.Slice(related, func(i, j int) bool { return related[i].count > related[j].count })
 
+	e.ensureCatalogItem(lastViewed)
 	item, _ := e.catalog[lastViewed]
+	viewedTitle := item.Title
+	if viewedTitle == "" {
+		viewedTitle = fmt.Sprintf("Product-%d", lastViewed)
+	}
 	var recs []models.Recommendation
 	for i, r := range related {
 		if i >= limit {
 			break
 		}
-		recs = append(recs, e.itemToRec(r.id, float64(r.count), "Because you viewed "+item.Title))
+		recs = append(recs, e.itemToRec(r.id, float64(r.count), "Because you viewed "+viewedTitle))
 	}
 	if len(recs) == 0 && item.CategoryID > 0 {
 		for id, catItem := range e.catalog {
 			if id != lastViewed && catItem.CategoryID == item.CategoryID && len(recs) < limit {
-				recs = append(recs, e.itemToRec(id, 1.0, "Because you viewed "+item.Title))
+				recs = append(recs, e.itemToRec(id, 1.0, "Because you viewed "+viewedTitle))
 			}
 		}
 	}
@@ -375,9 +441,91 @@ func (e *RecommendationEngine) cartBased(p *UserProfile, limit int) []models.Rec
 	return recs
 }
 
+func (e *RecommendationEngine) catalogCategoryID(itemID int64) int64 {
+	e.ensureCatalogItem(itemID)
+	if item, ok := e.catalog[itemID]; ok {
+		return item.CategoryID
+	}
+	return itemID%6 + 1
+}
+
+func (e *RecommendationEngine) hydrateProfileFromDB(userID int64) {
+	var records []models.UserEventRecord
+	if err := e.db.Where("user_id = ?", userID).Order("timestamp asc").Limit(500).Find(&records).Error; err != nil || len(records) == 0 {
+		return
+	}
+	p := e.getProfile(userID)
+	e.mu.Lock()
+	for _, rec := range records {
+		switch rec.EventType {
+		case models.EventTypeViewed:
+			p.ViewedItems[rec.ItemID]++
+			p.CategoryCounts[rec.CategoryID]++
+			e.trackCoView(rec.ItemID, p.ViewedItems)
+		case models.EventTypeAddToCart:
+			p.CartItems[rec.ItemID] = true
+			p.CategoryCounts[rec.CategoryID] += 2
+		case models.EventTypePurchased:
+			p.PurchasedItems[rec.ItemID] = true
+			p.CategoryCounts[rec.CategoryID] += 3
+		}
+	}
+	e.mu.Unlock()
+}
+
+func (e *RecommendationEngine) hydrateProfileFromDBIfNeeded(userID int64) {
+	e.mu.RLock()
+	p := e.profiles[userID]
+	needsHydrate := p == nil || len(p.ViewedItems) == 0
+	e.mu.RUnlock()
+	if needsHydrate {
+		e.hydrateProfileFromDB(userID)
+	}
+}
+
 func (e *RecommendationEngine) getRecommendations(c *gin.Context) {
 	userID, _ := strconv.ParseInt(c.Param("userId"), 10, 64)
-	c.JSON(200, e.buildRecommendations(userID))
+	e.hydrateProfileFromDBIfNeeded(userID)
+	c.JSON(200, models.NormalizeRecs(e.buildRecommendations(userID)))
+}
+
+func (e *RecommendationEngine) getActiveReplayUsers(c *gin.Context) {
+	type row struct {
+		UserID     int64 `gorm:"column:user_id"`
+		EventCount int64 `gorm:"column:event_count"`
+	}
+	var rows []row
+	e.db.Raw(`
+		SELECT user_id, COUNT(*) AS event_count
+		FROM user_events
+		GROUP BY user_id
+		ORDER BY MAX(timestamp) DESC
+		LIMIT 30
+	`).Scan(&rows)
+
+	e.mu.RLock()
+	for uid := range e.profiles {
+		found := false
+		for _, r := range rows {
+			if r.UserID == uid {
+				found = true
+				break
+			}
+		}
+		if !found {
+			rows = append([]row{{UserID: uid, EventCount: 1}}, rows...)
+		}
+	}
+	e.mu.RUnlock()
+
+	out := make([]gin.H, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, gin.H{
+			"userId": r.UserID, "eventCount": r.EventCount,
+			"username": fmt.Sprintf("user_%d", r.UserID),
+		})
+	}
+	c.JSON(200, out)
 }
 
 func (e *RecommendationEngine) getSampleUsers(c *gin.Context) {

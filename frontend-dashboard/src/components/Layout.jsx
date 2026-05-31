@@ -4,8 +4,8 @@ const nav = [
   { to: '/', label: 'Dashboard' },
   { to: '/activity', label: 'Live Activity' },
   { to: '/analytics', label: 'Analytics' },
-  { to: '/sql', label: 'AI SQL' },
-  { to: '/voice-sql', label: 'Voice SQL' },
+  { to: '/sql', label: 'Ask PEP' },
+  { to: '/voice-sql', label: 'Voice Assistant' },
   { to: '/replay', label: 'Replay' },
 ]
 
