@@ -5,17 +5,28 @@ function getSpeechRecognition() {
   return window.SpeechRecognition || window.webkitSpeechRecognition || null
 }
 
-export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
+/** Grace period after mic opens — ignore early phantom finals (echo / browser glitches). */
+const RESULT_GRACE_MS = 1500
+
+export function useSpeechRecognition({
+  onTranscript,
+  onEnd,
+  lang = 'en-US',
+} = {}) {
   const [listening, setListening] = useState(false)
   const [transcript, setTranscript] = useState('')
   const [interim, setInterim] = useState('')
   const [supported, setSupported] = useState(false)
   const [error, setError] = useState(null)
   const recognitionRef = useRef(null)
-  const onResultRef = useRef(onResult)
+  const onTranscriptRef = useRef(onTranscript)
   const onEndRef = useRef(onEnd)
+  const startedAtRef = useRef(0)
+  const heardUserRef = useRef(false)
+  const latestTranscriptRef = useRef('')
+  const latestInterimRef = useRef('')
 
-  onResultRef.current = onResult
+  onTranscriptRef.current = onTranscript
   onEndRef.current = onEnd
 
   useEffect(() => {
@@ -32,6 +43,8 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
     recognition.onstart = () => {
       setListening(true)
       setError(null)
+      startedAtRef.current = Date.now()
+      heardUserRef.current = false
     }
 
     recognition.onresult = (event) => {
@@ -45,23 +58,44 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
           interimText += t
         }
       }
-      if (interimText) setInterim(interimText.trim())
+
+      if (interimText) {
+        const trimmedInterim = interimText.trim()
+        latestInterimRef.current = trimmedInterim
+        setInterim(trimmedInterim)
+      }
+
       if (finalText) {
+        const elapsed = Date.now() - startedAtRef.current
+        if (elapsed < RESULT_GRACE_MS) {
+          return
+        }
         const trimmed = finalText.trim()
+        if (!trimmed) return
+
+        heardUserRef.current = true
+        latestTranscriptRef.current = trimmed
         setTranscript(trimmed)
         setInterim('')
-        onResultRef.current?.(trimmed)
+        onTranscriptRef.current?.(trimmed)
       }
     }
 
     recognition.onerror = (event) => {
-      setError(event.error || 'speech recognition failed')
+      if (event.error !== 'aborted' && event.error !== 'no-speech') {
+        setError(event.error || 'speech recognition failed')
+      }
       setListening(false)
     }
 
     recognition.onend = () => {
       setListening(false)
-      onEndRef.current?.()
+      onEndRef.current?.({
+        transcript: latestTranscriptRef.current,
+        interim: latestInterimRef.current,
+        heardUser: heardUserRef.current,
+        durationMs: Date.now() - startedAtRef.current,
+      })
     }
 
     recognitionRef.current = recognition
@@ -81,12 +115,19 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
     setTranscript('')
     setInterim('')
     setError(null)
+    latestTranscriptRef.current = ''
+    latestInterimRef.current = ''
+    heardUserRef.current = false
     try {
       recognition.start()
     } catch (e) {
       if (e.name === 'InvalidStateError') {
         recognition.stop()
-        setTimeout(() => recognition.start(), 100)
+        setTimeout(() => {
+          try {
+            recognition.start()
+          } catch (_) {}
+        }, 150)
       } else {
         setError(e.message)
       }
@@ -101,6 +142,9 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
     setTranscript('')
     setInterim('')
     setError(null)
+    latestTranscriptRef.current = ''
+    latestInterimRef.current = ''
+    heardUserRef.current = false
   }, [])
 
   return {
@@ -112,6 +156,7 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
     start,
     stop,
     reset,
+    getLatestTranscript: () => latestTranscriptRef.current,
   }
 }
 
@@ -135,7 +180,6 @@ export function speak(text, { rate = 1, pitch = 1, cancelPrevious = true } = {})
   return utterance
 }
 
-/** Resolves when speech finishes or fails (for chaining voice prompts). */
 export function speakAsync(text, options = {}) {
   return new Promise((resolve) => {
     const utterance = speak(text, options)

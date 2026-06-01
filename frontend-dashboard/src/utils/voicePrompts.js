@@ -21,6 +21,18 @@ export const VOICE_LISTENING_HINTS = [
   'Listening now. What would you like to know?',
 ]
 
+const ASSISTANT_PHRASE_FRAGMENTS = [
+  'i am listening',
+  'listening now',
+  'go ahead with your question',
+  'what would you like to know',
+  'one moment while i fetch',
+  'looking that up',
+  'still working on your request',
+  'almost there',
+  'hang on',
+]
+
 export function ackPhrase() {
   return pickRandom(VOICE_ACK_PHRASES)
 }
@@ -31,4 +43,19 @@ export function slowPhrase() {
 
 export function listeningHint() {
   return pickRandom(VOICE_LISTENING_HINTS)
+}
+
+/** Reject TTS echo / noise that is not a real user question. */
+export function isLikelyAssistantPhrase(text) {
+  const lower = text.toLowerCase().trim()
+  return ASSISTANT_PHRASE_FRAGMENTS.some((frag) => lower.includes(frag))
+}
+
+export function isValidVoiceQuestion(text) {
+  const q = text?.trim() ?? ''
+  if (q.length < 8) return false
+  const words = q.split(/\s+/).filter(Boolean)
+  if (words.length < 2) return false
+  if (isLikelyAssistantPhrase(q)) return false
+  return true
 }

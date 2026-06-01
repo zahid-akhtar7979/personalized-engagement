@@ -3,10 +3,16 @@ import { runAIQuery, getAIStatus } from '../api/client'
 import QueryResultsTable from '../components/QueryResultsTable'
 import {
   speak,
+  speakAsync,
   stopSpeaking,
   useSpeechRecognition,
 } from '../hooks/useSpeechRecognition'
-import { ackPhrase, listeningHint, slowPhrase } from '../utils/voicePrompts'
+import {
+  ackPhrase,
+  isValidVoiceQuestion,
+  listeningHint,
+  slowPhrase,
+} from '../utils/voicePrompts'
 
 const VOICE_EXAMPLES = [
   'Show top 20 users by number of events',
@@ -16,6 +22,7 @@ const VOICE_EXAMPLES = [
 ]
 
 const SLOW_QUERY_MS = 4500
+const MIN_LISTEN_MS = 1200
 
 export default function VoiceSQLAssistant() {
   const [loading, setLoading] = useState(false)
@@ -24,7 +31,10 @@ export default function VoiceSQLAssistant() {
   const [speaking, setSpeaking] = useState(false)
   const [manualQuestion, setManualQuestion] = useState('')
   const [llmStatus, setLlmStatus] = useState(null)
+  const [awaitingSpeech, setAwaitingSpeech] = useState(false)
   const queryRunId = useRef(0)
+  const userRequestedStopRef = useRef(false)
+  const micBusyRef = useRef(false)
 
   useEffect(() => {
     getAIStatus()
@@ -48,7 +58,7 @@ export default function VoiceSQLAssistant() {
   const runQuery = useCallback(
     async (question) => {
       const q = question?.trim()
-      if (!q) return
+      if (!q || !isValidVoiceQuestion(q)) return
 
       const runId = ++queryRunId.current
       setLoading(true)
@@ -56,7 +66,6 @@ export default function VoiceSQLAssistant() {
       setStatusText('Processing your question…')
       stopSpeaking()
 
-      // Immediate voice acknowledgment (parallel with API)
       speak(ackPhrase(), { cancelPrevious: true })
 
       const slowTimer = setTimeout(() => {
@@ -112,12 +121,53 @@ export default function VoiceSQLAssistant() {
     [speakSummary]
   )
 
-  const handleFinalTranscript = useCallback(
-    (text) => {
-      setManualQuestion(text)
-      runQuery(text)
+  const trySubmitVoiceQuestion = useCallback(
+    (text, { heardUser, durationMs, userStopped }) => {
+      const q = text?.trim() ?? ''
+      if (!heardUser || durationMs < MIN_LISTEN_MS) {
+        if (userStopped) {
+          speak("I didn't catch that. Tap the microphone, wait for the beep, then ask your question.", {
+            cancelPrevious: true,
+          })
+        }
+        return
+      }
+      if (!isValidVoiceQuestion(q)) {
+        if (userStopped) {
+          speak('Please ask a clear business question, for example: show top users by event count.', {
+            cancelPrevious: true,
+          })
+        }
+        return
+      }
+      setManualQuestion(q)
+      runQuery(q)
     },
     [runQuery]
+  )
+
+  const handleTranscript = useCallback((text) => {
+    setManualQuestion(text)
+    setStatusText('Heard you — tap stop when finished, or pause to send automatically.')
+  }, [])
+
+  const handleSpeechEnd = useCallback(
+    ({ transcript: finalText, interim: interimText, heardUser, durationMs }) => {
+      setAwaitingSpeech(false)
+      micBusyRef.current = false
+
+      const combined = (finalText || interimText || '').trim()
+      if (!userRequestedStopRef.current && !heardUser) {
+        setStatusText('Tap the microphone and speak your question.')
+        return
+      }
+
+      const userStopped = userRequestedStopRef.current
+      userRequestedStopRef.current = false
+
+      trySubmitVoiceQuestion(combined, { heardUser, durationMs, userStopped })
+    },
+    [trySubmitVoiceQuestion]
   )
 
   const {
@@ -130,7 +180,8 @@ export default function VoiceSQLAssistant() {
     stop,
     reset,
   } = useSpeechRecognition({
-    onResult: handleFinalTranscript,
+    onTranscript: handleTranscript,
+    onEnd: handleSpeechEnd,
   })
 
   useEffect(() => {
@@ -146,15 +197,35 @@ export default function VoiceSQLAssistant() {
   const displayQuestion = manualQuestion || transcript || interim
   const resultRows = result?.data ?? result?.rows ?? []
 
+  const startListening = async () => {
+    if (micBusyRef.current || loading) return
+    micBusyRef.current = true
+    reset()
+    setResult(null)
+    setManualQuestion('')
+    setStatusText('Starting microphone…')
+    userRequestedStopRef.current = false
+
+    stopSpeaking()
+    await speakAsync(listeningHint())
+    setAwaitingSpeech(true)
+    setStatusText('Listening… speak your question, then tap stop or pause briefly.')
+    start()
+    micBusyRef.current = false
+  }
+
+  const stopListening = () => {
+    if (!listening) return
+    userRequestedStopRef.current = true
+    setStatusText('Processing what you said…')
+    stop()
+  }
+
   const toggleMic = () => {
     if (listening) {
-      stop()
+      stopListening()
     } else {
-      reset()
-      setResult(null)
-      setStatusText('')
-      start()
-      speak(listeningHint(), { cancelPrevious: true })
+      startListening()
     }
   }
 
@@ -162,7 +233,7 @@ export default function VoiceSQLAssistant() {
     <div className="max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-2">AI Voice Assistant</h1>
       <p className="text-netflix-muted text-sm mb-2">
-        Speak a business question — we transcribe it, OpenAI writes safe SQL, PostgreSQL returns data, and the assistant reads the answer aloud.
+        Tap the microphone, wait for the prompt, then ask your question. We only run a query after you speak — not on page load.
       </p>
       {llmStatus && (
         <p className="text-xs mb-4">
@@ -188,13 +259,13 @@ export default function VoiceSQLAssistant() {
         <button
           type="button"
           onClick={toggleMic}
-          disabled={!supported || loading}
+          disabled={!supported || loading || micBusyRef.current}
           className={`relative w-24 h-24 rounded-full mx-auto flex items-center justify-center transition-all ${
             listening
               ? 'bg-netflix-accent animate-pulse shadow-lg shadow-netflix-accent/40'
               : 'bg-white/10 hover:bg-netflix-accent/80'
           } disabled:opacity-50`}
-          aria-label={listening ? 'Stop listening' : 'Start microphone'}
+          aria-label={listening ? 'Stop and send question' : 'Start microphone'}
         >
           <span className="text-4xl">{listening ? '⏹' : '🎤'}</span>
           {listening && (
@@ -203,14 +274,18 @@ export default function VoiceSQLAssistant() {
         </button>
 
         <p className="mt-4 text-sm text-netflix-muted">
-          {listening ? 'Listening… speak your question' : 'Tap microphone and ask a question'}
+          {listening
+            ? 'Listening… tap stop when done, or pause after speaking'
+            : awaitingSpeech
+              ? 'Opening microphone…'
+              : 'Tap microphone → wait for prompt → ask your question'}
         </p>
 
         <div className="mt-4 min-h-[3rem] p-4 rounded-lg bg-black/40 border border-white/10 text-left">
           <p className="text-xs text-netflix-muted uppercase tracking-wide mb-1">Live transcription</p>
           <p className="text-base">
             {displayQuestion || (
-              <span className="text-netflix-muted italic">Your words will appear here…</span>
+              <span className="text-netflix-muted italic">Your words will appear here after you speak…</span>
             )}
             {interim && listening && (
               <span className="text-netflix-muted"> {interim}</span>
@@ -218,7 +293,7 @@ export default function VoiceSQLAssistant() {
           </p>
         </div>
 
-        {speechError && (
+        {speechError && speechError !== 'no-speech' && (
           <p className="mt-2 text-sm text-red-400">{speechError}</p>
         )}
 
@@ -227,21 +302,21 @@ export default function VoiceSQLAssistant() {
             {loading && (
               <span className="inline-block w-2 h-2 rounded-full bg-netflix-accent animate-pulse" />
             )}
-            <p className={loading ? 'animate-pulse' : ''}>
-              {statusText || 'Working…'}
-            </p>
+            <p className={loading ? 'animate-pulse' : ''}>{statusText}</p>
           </div>
         )}
       </div>
 
       <div className="bg-netflix-card rounded-xl p-4 border border-white/5 mb-6">
-        <p className="text-xs text-netflix-muted mb-2">Or type your question</p>
+        <p className="text-xs text-netflix-muted mb-2">Or type your question (typed questions always need Ask)</p>
         <div className="flex gap-2 flex-wrap">
           <input
             type="text"
             value={manualQuestion}
             onChange={(e) => setManualQuestion(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && runQuery(manualQuestion)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !loading) runQuery(manualQuestion)
+            }}
             placeholder="How many users viewed products last week?"
             className="flex-1 min-w-[200px] bg-black/40 border border-white/10 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-netflix-accent"
           />

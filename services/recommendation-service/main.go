@@ -355,6 +355,36 @@ func (e *RecommendationEngine) globalTrending(limit int, picker *catalog.ImagePi
 		}
 		recs = append(recs, e.itemToRec(kv.id, float64(kv.count), "Trending now across platform", picker))
 	}
+
+	// Fallback: platform-wide top viewed items from PostgreSQL (live Kafka global state may be empty after restart).
+	if len(recs) < limit {
+		type row struct {
+			ItemID int64 `gorm:"column:item_id"`
+			Cnt    int64 `gorm:"column:cnt"`
+		}
+		var rows []row
+		e.db.Raw(`
+			SELECT item_id, COUNT(*) AS cnt
+			FROM user_events
+			WHERE event_type = 'VIEWED' AND item_id IS NOT NULL
+			GROUP BY item_id
+			ORDER BY cnt DESC
+			LIMIT ?
+		`, limit).Scan(&rows)
+		seen := make(map[int64]bool)
+		for _, r := range recs {
+			seen[r.ItemID] = true
+		}
+		for _, r := range rows {
+			if seen[r.ItemID] {
+				continue
+			}
+			recs = append(recs, e.itemToRec(r.ItemID, float64(r.Cnt), "Trending now across platform", picker))
+			if len(recs) >= limit {
+				break
+			}
+		}
+	}
 	return recs
 }
 
@@ -413,22 +443,54 @@ func (e *RecommendationEngine) cartBased(p *UserProfile, limit int, picker *cata
 	if len(p.CartItems) == 0 {
 		return nil
 	}
+
+	// Use most recently added cart line (last key in map iteration is arbitrary; pick highest item id as stable tie-break).
 	var cartItem int64
 	for id := range p.CartItems {
-		cartItem = id
-		break
+		if id > cartItem {
+			cartItem = id
+		}
 	}
+	e.ensureCatalogItem(cartItem)
 	item, ok := e.catalog[cartItem]
-	if !ok {
-		return nil
+	catID := int64(0)
+	if ok {
+		catID = item.CategoryID
+	} else if cartItem > 0 {
+		catID = cartItem%50 + 1
 	}
+
 	var recs []models.Recommendation
+	seen := map[int64]bool{cartItem: true}
+	for id := range p.PurchasedItems {
+		seen[id] = true
+	}
+
+	e.mu.RLock()
 	for id, catItem := range e.catalog {
-		if id == cartItem {
+		if seen[id] || catItem.CategoryID != catID {
 			continue
 		}
-		if catItem.CategoryID == item.CategoryID {
-			recs = append(recs, e.itemToRec(id, 2.0, "Frequently bought with cart items", picker))
+		recs = append(recs, e.itemToRec(id, 2.0, "Frequently bought with cart items", picker))
+		if len(recs) >= limit {
+			break
+		}
+	}
+	e.mu.RUnlock()
+
+	// Fallback: scan catalog by category via DB if in-memory map did not yield enough (large catalog).
+	if len(recs) < limit && catID > 0 {
+		var items []models.ContentCatalog
+		e.db.Where("category_id = ? AND item_id <> ?", catID, cartItem).Limit(limit).Find(&items)
+		for _, catItem := range items {
+			if seen[catItem.ItemID] {
+				continue
+			}
+			seen[catItem.ItemID] = true
+			e.mu.Lock()
+			e.catalog[catItem.ItemID] = catItem
+			e.mu.Unlock()
+			recs = append(recs, e.itemToRec(catItem.ItemID, 2.0, "Frequently bought with cart items", picker))
 			if len(recs) >= limit {
 				break
 			}
@@ -472,7 +534,9 @@ func (e *RecommendationEngine) hydrateProfileFromDB(userID int64) {
 func (e *RecommendationEngine) hydrateProfileFromDBIfNeeded(userID int64) {
 	e.mu.RLock()
 	p := e.profiles[userID]
-	needsHydrate := p == nil || len(p.ViewedItems) == 0
+	needsHydrate := p == nil ||
+		len(p.ViewedItems) == 0 ||
+		len(p.CartItems) == 0 // reload from DB so cart section can use ADD_TO_CART history
 	e.mu.RUnlock()
 	if needsHydrate {
 		e.hydrateProfileFromDB(userID)
