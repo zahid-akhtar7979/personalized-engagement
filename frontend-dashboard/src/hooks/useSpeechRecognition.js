@@ -115,10 +115,12 @@ export function useSpeechRecognition({ onResult, onEnd, lang = 'en-US' } = {}) {
   }
 }
 
-export function speak(text, { rate = 1, pitch = 1 } = {}) {
-  if (typeof window === 'undefined' || !window.speechSynthesis || !text) return
+export function speak(text, { rate = 1, pitch = 1, cancelPrevious = true } = {}) {
+  if (typeof window === 'undefined' || !window.speechSynthesis || !text) return null
 
-  window.speechSynthesis.cancel()
+  if (cancelPrevious) {
+    window.speechSynthesis.cancel()
+  }
   const utterance = new SpeechSynthesisUtterance(text)
   utterance.rate = rate
   utterance.pitch = pitch
@@ -133,6 +135,24 @@ export function speak(text, { rate = 1, pitch = 1 } = {}) {
   return utterance
 }
 
+/** Resolves when speech finishes or fails (for chaining voice prompts). */
+export function speakAsync(text, options = {}) {
+  return new Promise((resolve) => {
+    const utterance = speak(text, options)
+    if (!utterance) {
+      resolve()
+      return
+    }
+    const done = () => resolve()
+    utterance.onend = done
+    utterance.onerror = done
+  })
+}
+
 export function stopSpeaking() {
   window.speechSynthesis?.cancel()
+}
+
+export function pickRandom(list) {
+  return list[Math.floor(Math.random() * list.length)]
 }
