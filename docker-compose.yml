@@ -140,13 +140,16 @@ services:
       dockerfile: Dockerfile.go
       args:
         SERVICE: ai-insights-service
+    env_file:
+      - .env
     environment:
       PEP_PORT: "8085"
       PEP_KAFKA_BROKERS: kafka:29092
       PEP_POSTGRES_DSN: "host=postgres user=pep password=pep123 dbname=pep port=5432 sslmode=disable"
       PEP_REDIS_ADDR: redis:6379
-      PEP_USE_MOCK_AI: "true"
+      PEP_USE_MOCK_AI: ${PEP_USE_MOCK_AI:-false}
       PEP_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      PEP_OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
     ports:
       - "8085:8085"
     depends_on:

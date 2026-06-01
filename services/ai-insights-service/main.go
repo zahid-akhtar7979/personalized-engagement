@@ -61,9 +61,16 @@ func main() {
 	go svc.runRetentionAgent(ctx)
 	go svc.periodicDBInsights(ctx)
 
+	if svc.cfg.UseMockAI || svc.cfg.OpenAIAPIKey == "" {
+		log.Warn("Ask PEP: mock SQL mode (set PEP_OPENAI_API_KEY and PEP_USE_MOCK_AI=false for OpenAI)")
+	} else {
+		log.Info("Ask PEP: OpenAI SQL generation enabled", zap.String("model", svc.cfg.OpenAIModel))
+	}
+
 	r := gin.Default()
 	r.Use(corsMiddleware())
 	r.GET("/health", func(c *gin.Context) { c.JSON(200, gin.H{"status": "ok"}) })
+	r.GET("/api/ai/status", svc.aiStatus)
 	r.GET("/api/ai/alerts", svc.getAlerts)
 	r.POST("/api/ai/sql", svc.sqlAssistant)
 	r.POST("/api/ai/query", svc.aiQuery)
@@ -303,31 +310,17 @@ func (s *AIInsightsService) sqlAssistant(c *gin.Context) {
 		return
 	}
 
-	sql, err := s.generateSQL(req.Question)
+	resp, err := s.runNaturalLanguageQuery(strings.TrimSpace(req.Question))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
-
-	rows, err := s.executeSafeSQL(sql)
-	if err != nil {
-		c.JSON(200, models.SQLQueryResponse{
-			Question: req.Question, GeneratedSQL: sql,
-			Rows: []map[string]interface{}{{"error": err.Error()}}, RowCount: 0,
-		})
-		return
-	}
-
-	if rows == nil {
-		rows = emptyRows()
-	}
 	c.JSON(200, models.SQLQueryResponse{
-		Question: req.Question, GeneratedSQL: sql, Rows: rows, RowCount: len(rows),
+		Question:     req.Question,
+		GeneratedSQL: resp.GeneratedSQL,
+		Rows:         resp.Data,
+		RowCount:     resp.RowCount,
 	})
-}
-
-func (s *AIInsightsService) generateSQL(question string) (string, error) {
-	return s.generateSQLWithSchema(question)
 }
 
 func mockSQLFromQuestion(q string) string {

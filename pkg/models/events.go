@@ -101,6 +101,7 @@ type AIQueryResponse struct {
 	Summary      string                   `json:"summary"`
 	Data         []map[string]interface{} `json:"data"`
 	RowCount     int                      `json:"rowCount"`
+	Source       string                   `json:"source,omitempty"` // "openai" | "mock"
 }
 
 type ReplayState struct {

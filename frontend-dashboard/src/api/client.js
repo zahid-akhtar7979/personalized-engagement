@@ -29,6 +29,7 @@ export const getRecommendations = (userId) => recs.get(`/api/recommendations/${u
 export const getSampleUsers = () => recs.get('/api/users/sample')
 export const getActiveReplayUsers = () => recs.get('/api/users/active')
 export const getAIAlerts = () => ai.get('/api/ai/alerts')
+export const getAIStatus = () => ai.get('/api/ai/status')
 export const runSQLQuery = (question) => ai.post('/api/ai/sql', { question })
 export const runAIQuery = (question) => ai.post('/api/ai/query', { question })
 

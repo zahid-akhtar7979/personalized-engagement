@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"personalized-engagement/pkg/models"
@@ -16,7 +17,7 @@ const postgresSchema = `
 PostgreSQL schema (use only these tables and columns):
 
 TABLE users (
-  id BIGSERIAL PRIMARY KEY,
+  id BIGINT PRIMARY KEY,
   username VARCHAR(255) UNIQUE NOT NULL,
   email VARCHAR(255),
   created_at TIMESTAMPTZ,
@@ -24,7 +25,7 @@ TABLE users (
 );
 
 TABLE categories (
-  id BIGSERIAL PRIMARY KEY,
+  id BIGINT PRIMARY KEY,
   name VARCHAR(255) NOT NULL,
   parent_id BIGINT REFERENCES categories(id)
 );
@@ -72,6 +73,15 @@ TABLE analytics_metrics (
 );
 `
 
+func (s *AIInsightsService) aiStatus(c *gin.Context) {
+	c.JSON(200, gin.H{
+		"llmEnabled":  !s.cfg.UseMockAI && s.cfg.OpenAIAPIKey != "",
+		"model":       s.cfg.OpenAIModel,
+		"useMockAI":   s.cfg.UseMockAI,
+		"hasApiKey":   s.cfg.OpenAIAPIKey != "",
+	})
+}
+
 func (s *AIInsightsService) aiQuery(c *gin.Context) {
 	var req models.AIQueryRequest
 	if err := c.BindJSON(&req); err != nil || strings.TrimSpace(req.Question) == "" {
@@ -79,71 +89,91 @@ func (s *AIInsightsService) aiQuery(c *gin.Context) {
 		return
 	}
 
-	question := strings.TrimSpace(req.Question)
-	sql, err := s.generateSQLWithSchema(question)
+	resp, err := s.runNaturalLanguageQuery(strings.TrimSpace(req.Question))
 	if err != nil {
 		c.JSON(500, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(200, resp)
+}
+
+func (s *AIInsightsService) runNaturalLanguageQuery(question string) (models.AIQueryResponse, error) {
+	sql, source, err := s.generateSQLWithSchema(question)
+	if err != nil {
+		return models.AIQueryResponse{}, err
+	}
 
 	data, execErr := s.executeSafeSQL(sql)
 	if execErr != nil {
-		c.JSON(200, models.AIQueryResponse{
+		return models.AIQueryResponse{
 			GeneratedSQL: sql,
 			Summary:      fmt.Sprintf("Query failed: %s", execErr.Error()),
 			Data:         []map[string]interface{}{{"error": execErr.Error()}},
 			RowCount:     0,
-		})
-		return
+			Source:       source,
+		}, nil
 	}
 	if data == nil {
 		data = emptyRows()
 	}
 
-	summary := s.generateSummary(question, sql, data)
-	c.JSON(200, models.AIQueryResponse{
+	summary := s.generateSummary(question, sql, data, source)
+	return models.AIQueryResponse{
 		GeneratedSQL: sql,
 		Summary:      summary,
 		Data:         data,
 		RowCount:     len(data),
-	})
+		Source:       source,
+	}, nil
 }
 
-func (s *AIInsightsService) generateSQLWithSchema(question string) (string, error) {
+func (s *AIInsightsService) generateSQLWithSchema(question string) (sql string, source string, err error) {
 	if s.cfg.UseMockAI || s.cfg.OpenAIAPIKey == "" {
-		return mockSQLFromQuestion(question), nil
+		return mockSQLFromQuestion(question), "mock", nil
 	}
-	return s.openAISQLWithSchema(question)
+
+	sql, err = s.openAISQLWithSchema(question)
+	if err != nil {
+		return "", "", fmt.Errorf("OpenAI SQL generation failed: %w", err)
+	}
+	return sql, "openai", nil
 }
 
 func (s *AIInsightsService) openAISQLWithSchema(question string) (string, error) {
-	system := `You are a PostgreSQL SQL assistant for an e-commerce analytics platform.
+	system := `You are a PostgreSQL SQL assistant for an e-commerce personalization platform (Retailrocket-style event data).
+
 Rules:
-- Generate ONLY a single SELECT statement.
-- Never use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, or GRANT.
-- Use only tables and columns from the provided schema.
+- Generate ONLY one valid PostgreSQL SELECT statement.
+- Never use INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, GRANT, or semicolons with multiple statements.
+- Use only tables and columns from the schema below.
+- Prefer LIMIT 20–50 on large result sets.
+- Use event_type values exactly: VIEWED, ADD_TO_CART, PURCHASED.
 - Return ONLY the raw SQL query with no markdown, explanation, or code fences.`
 
 	user := fmt.Sprintf("%s\n\nBusiness question: %s", postgresSchema, question)
 
 	sql, err := s.chatCompletion(system, user, 0)
-	if err != nil || sql == "" {
-		return mockSQLFromQuestion(question), nil
+	if err != nil {
+		return "", err
 	}
-	return cleanSQL(sql), nil
+	sql = cleanSQL(sql)
+	if sql == "" {
+		return "", fmt.Errorf("empty SQL from model")
+	}
+	return sql, nil
 }
 
-func (s *AIInsightsService) generateSummary(question, sql string, data []map[string]interface{}) string {
-	if s.cfg.UseMockAI || s.cfg.OpenAIAPIKey == "" {
+func (s *AIInsightsService) generateSummary(question, sql string, data []map[string]interface{}, source string) string {
+	if source == "mock" || s.cfg.OpenAIAPIKey == "" {
 		return mockSummaryFromQuestion(question, len(data))
 	}
 
-	system := `You summarize database query results in one short spoken sentence (under 15 words).
-Examples: "Here are the top retained users." or "Found 12 purchases this week."
-Do not mention SQL. Be conversational.`
+	system := `You summarize database query results in one short sentence (under 20 words).
+Be conversational. Do not mention SQL or the database.
+Example: "Here are the top 20 users by event count."`
 
 	preview, _ := json.Marshal(truncateRows(data, 5))
-	user := fmt.Sprintf("Question: %s\nRows returned: %d\nSample data: %s", question, len(data), string(preview))
+	user := fmt.Sprintf("Question: %s\nRows returned: %d\nSample JSON rows: %s", question, len(data), string(preview))
 
 	summary, err := s.chatCompletion(system, user, 0.3)
 	if err != nil || summary == "" {
@@ -189,12 +219,30 @@ func cleanSQL(sql string) string {
 	sql = strings.TrimPrefix(sql, "```SQL")
 	sql = strings.TrimPrefix(sql, "```")
 	sql = strings.TrimSuffix(sql, "```")
-	return strings.TrimSpace(sql)
+	// Take first statement only if model returned multiple lines with comments
+	lines := strings.Split(sql, "\n")
+	var parts []string
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if t == "" || strings.HasPrefix(t, "--") {
+			continue
+		}
+		parts = append(parts, t)
+	}
+	if len(parts) > 0 {
+		sql = strings.Join(parts, " ")
+	}
+	return strings.TrimSpace(strings.TrimSuffix(sql, ";"))
 }
 
 func (s *AIInsightsService) chatCompletion(system, user string, temperature float64) (string, error) {
+	model := s.cfg.OpenAIModel
+	if model == "" {
+		model = "gpt-4o-mini"
+	}
+
 	body, _ := json.Marshal(map[string]interface{}{
-		"model": "gpt-4o-mini",
+		"model": model,
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
 			{"role": "user", "content": user},
@@ -209,31 +257,40 @@ func (s *AIInsightsService) chatCompletion(system, user string, temperature floa
 	req.Header.Set("Authorization", "Bearer "+s.cfg.OpenAIAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 90 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 
 	data, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		var errBody struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(data, &errBody)
+		msg := errBody.Error.Message
+		if msg == "" {
+			msg = string(data)
+		}
+		return "", fmt.Errorf("OpenAI API %d: %s", resp.StatusCode, msg)
+	}
+
 	var result struct {
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
 	}
 	if err := json.Unmarshal(data, &result); err != nil {
 		return "", err
 	}
-	if result.Error != nil {
-		return "", fmt.Errorf("%s", result.Error.Message)
-	}
 	if len(result.Choices) == 0 {
-		return "", fmt.Errorf("no completion")
+		return "", fmt.Errorf("no completion choices returned")
 	}
 	return result.Choices[0].Message.Content, nil
 }
