@@ -1,18 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { runAIQuery, getAIStatus } from '../api/client'
 import QueryResultsTable from '../components/QueryResultsTable'
-import {
-  speak,
-  speakAsync,
-  stopSpeaking,
-  useSpeechRecognition,
-} from '../hooks/useSpeechRecognition'
+import { useSpeechRecognition } from '../hooks/useSpeechRecognition'
 import {
   ackPhrase,
   isValidVoiceQuestion,
   listeningHint,
   slowPhrase,
 } from '../utils/voicePrompts'
+import { clearSpeechQueue, enqueueSpeech } from '../utils/speechQueue'
 
 const VOICE_EXAMPLES = [
   'Show top 20 users by number of events',
@@ -42,17 +38,11 @@ export default function VoiceSQLAssistant() {
       .catch(() => setLlmStatus({ llmEnabled: false }))
   }, [])
 
-  const speakSummary = useCallback((text) => {
+  const speakSummary = useCallback(async (text) => {
     if (!text?.trim()) return
-    stopSpeaking()
     setSpeaking(true)
-    const utterance = speak(text.trim())
-    if (utterance) {
-      utterance.onend = () => setSpeaking(false)
-      utterance.onerror = () => setSpeaking(false)
-    } else {
-      setSpeaking(false)
-    }
+    await enqueueSpeech(text.trim())
+    setSpeaking(false)
   }, [])
 
   const runQuery = useCallback(
@@ -64,14 +54,13 @@ export default function VoiceSQLAssistant() {
       setLoading(true)
       setResult(null)
       setStatusText('Processing your question…')
-      stopSpeaking()
-
-      speak(ackPhrase(), { cancelPrevious: true })
+      clearSpeechQueue()
+      void enqueueSpeech(ackPhrase())
 
       const slowTimer = setTimeout(() => {
         if (queryRunId.current !== runId) return
         setStatusText('Still fetching results…')
-        speak(slowPhrase(), { cancelPrevious: true })
+        void enqueueSpeech(slowPhrase())
       }, SLOW_QUERY_MS)
 
       try {
@@ -81,7 +70,6 @@ export default function VoiceSQLAssistant() {
         if (queryRunId.current !== runId) return
 
         clearTimeout(slowTimer)
-        stopSpeaking()
 
         setResult(data)
         setStatusText(
@@ -96,12 +84,11 @@ export default function VoiceSQLAssistant() {
             ? `I found ${data.rowCount} rows for your question.`
             : 'I did not find any rows for that question.')
 
-        speakSummary(spoken)
+        await speakSummary(spoken)
       } catch (err) {
         if (queryRunId.current !== runId) return
 
         clearTimeout(slowTimer)
-        stopSpeaking()
 
         const msg = err.response?.data?.error || err.message
         setResult({
@@ -111,7 +98,7 @@ export default function VoiceSQLAssistant() {
           source: 'error',
         })
         setStatusText('Request failed.')
-        speakSummary('Sorry, I could not complete that request. Please try again or rephrase your question.')
+        await speakSummary('Sorry, I could not complete that request. Please try again or rephrase your question.')
       } finally {
         if (queryRunId.current === runId) {
           setLoading(false)
@@ -126,17 +113,13 @@ export default function VoiceSQLAssistant() {
       const q = text?.trim() ?? ''
       if (!heardUser || durationMs < MIN_LISTEN_MS) {
         if (userStopped) {
-          speak("I didn't catch that. Tap the microphone, wait for the beep, then ask your question.", {
-            cancelPrevious: true,
-          })
+          void enqueueSpeech("I didn't catch that. Tap the microphone, wait for the prompt, then ask your question.")
         }
         return
       }
       if (!isValidVoiceQuestion(q)) {
         if (userStopped) {
-          speak('Please ask a clear business question, for example: show top users by event count.', {
-            cancelPrevious: true,
-          })
+          void enqueueSpeech('Please ask a clear business question, for example: show top users by event count.')
         }
         return
       }
@@ -190,7 +173,7 @@ export default function VoiceSQLAssistant() {
     }
     return () => {
       queryRunId.current += 1
-      stopSpeaking()
+      clearSpeechQueue()
     }
   }, [])
 
@@ -206,8 +189,8 @@ export default function VoiceSQLAssistant() {
     setStatusText('Starting microphone…')
     userRequestedStopRef.current = false
 
-    stopSpeaking()
-    await speakAsync(listeningHint())
+    clearSpeechQueue()
+    await enqueueSpeech(listeningHint())
     setAwaitingSpeech(true)
     setStatusText('Listening… speak your question, then tap stop or pause briefly.')
     start()
