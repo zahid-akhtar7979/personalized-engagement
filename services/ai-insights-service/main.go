@@ -33,7 +33,6 @@ type AIInsightsService struct {
 	alerts        []models.RetentionAlert
 	alertsMu      sync.RWMutex
 	prevRetention float64
-	categoryPerf  map[string]float64
 }
 
 func main() {
@@ -53,13 +52,14 @@ func main() {
 		kafka:        kc,
 		alertWriter:  kc.NewWriter(kafka.TopicAnalyticsEvents),
 		cfg:          cfg,
-		categoryPerf: make(map[string]float64),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	svc.refreshInsightsFromDB()
 	go svc.consumeAnalytics(ctx)
 	go svc.runRetentionAgent(ctx)
+	go svc.periodicDBInsights(ctx)
 
 	r := gin.Default()
 	r.Use(corsMiddleware())
@@ -122,48 +122,148 @@ func (s *AIInsightsService) consumeAnalytics(ctx context.Context) {
 }
 
 func (s *AIInsightsService) analyzeRetention(metrics models.AnalyticsMetrics) {
+	if metrics.TotalUsers == 0 && metrics.Views == 0 {
+		return
+	}
+
 	if s.prevRetention > 0 && metrics.RetentionRate < s.prevRetention-5 {
-		alert := models.RetentionAlert{
+		s.addAlertUnique(models.RetentionAlert{
 			AlertType:      "RETENTION_DROP",
 			Category:       "Platform-wide",
 			DropPercentage: s.prevRetention - metrics.RetentionRate,
 			Suggestion:     "Increase personalized recommendations and re-engagement campaigns",
 			Timestamp:      time.Now().UTC(),
-		}
-		s.addAlert(alert)
-		_ = kafka.PublishWithRetry(context.Background(), s.alertWriter, "retention-alert", alert, s.log, 3)
+		})
 	}
 
-	if metrics.ConversionRate < 2 {
-		alert := models.RetentionAlert{
+	if metrics.Views > 100 && metrics.ConversionRate < 2 {
+		s.addAlertUnique(models.RetentionAlert{
 			AlertType:      "LOW_CONVERSION",
-			Category:       "General",
-			DropPercentage: metrics.ConversionRate,
-			Suggestion:     "Optimize cart recommendations and checkout flow",
+			Category:       "Platform-wide",
+			DropPercentage: 2 - metrics.ConversionRate,
+			Suggestion:     fmt.Sprintf("Conversion is %.2f%% — optimize cart recommendations and checkout flow", metrics.ConversionRate),
 			Timestamp:      time.Now().UTC(),
-		}
-		s.addAlert(alert)
+		})
 	}
 
-	// Category performance simulation
-	categories := []string{"Electronics", "Computers", "Phones", "Fashion", "Home", "Sports"}
-	for _, cat := range categories {
-		score := metrics.EngagementScore * (0.5 + float64(len(cat)%5)*0.1)
-		prev := s.categoryPerf[cat]
-		s.categoryPerf[cat] = score
-		if prev > 0 && score < prev*0.85 {
-			alert := models.RetentionAlert{
-				AlertType:      "RETENTION_DROP",
-				Category:       cat,
-				DropPercentage: 12.5,
-				Suggestion:     fmt.Sprintf("Increase %s recommendations", strings.ToLower(cat)),
-				Timestamp:      time.Now().UTC(),
-			}
-			s.addAlert(alert)
-		}
+	if metrics.CTR < 5 && metrics.Views > 100 {
+		s.addAlertUnique(models.RetentionAlert{
+			AlertType:      "LOW_CTR",
+			Category:       "Recommendations",
+			DropPercentage: 5 - metrics.CTR,
+			Suggestion:     fmt.Sprintf("Recommendation CTR is %.1f%% — test new ranking rules and placement", metrics.CTR),
+			Timestamp:      time.Now().UTC(),
+		})
 	}
 
 	s.prevRetention = metrics.RetentionRate
+}
+
+func (s *AIInsightsService) refreshInsightsFromDB() {
+	type row struct {
+		CategoryName   string  `gorm:"column:category_name"`
+		Views          int64   `gorm:"column:views"`
+		ConversionRate float64 `gorm:"column:conversion_rate"`
+	}
+
+	var rows []row
+	err := s.db.Raw(`
+		SELECT
+			COALESCE('Category-' || e.category_id::TEXT, 'Unknown') AS category_name,
+			COUNT(*) FILTER (WHERE e.event_type = 'VIEWED') AS views,
+			ROUND(
+				100.0 * COUNT(*) FILTER (WHERE e.event_type = 'PURCHASED') /
+				NULLIF(COUNT(*) FILTER (WHERE e.event_type = 'VIEWED'), 0),
+				2
+			) AS conversion_rate
+		FROM user_events e
+		WHERE e.category_id IS NOT NULL
+		GROUP BY e.category_id
+		HAVING COUNT(*) FILTER (WHERE e.event_type = 'VIEWED') >= 50
+		ORDER BY conversion_rate ASC NULLS LAST
+		LIMIT 8
+	`).Scan(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return
+	}
+
+	s.alertsMu.Lock()
+	s.alerts = s.alerts[:0]
+	s.alertsMu.Unlock()
+
+	for _, r := range rows {
+		if r.ConversionRate >= 2 {
+			continue
+		}
+		s.addAlertUnique(models.RetentionAlert{
+			AlertType:      "LOW_CONVERSION",
+			Category:       r.CategoryName,
+			DropPercentage: 2 - r.ConversionRate,
+			Suggestion: fmt.Sprintf(
+				"%s conversion is %.2f%% (%d views) — add targeted bundles and cart prompts",
+				r.CategoryName, r.ConversionRate, r.Views,
+			),
+			Timestamp: time.Now().UTC(),
+		})
+	}
+
+	// Highlight top-performing category
+	var top row
+	_ = s.db.Raw(`
+		SELECT
+			COALESCE('Category-' || e.category_id::TEXT, 'Unknown') AS category_name,
+			COUNT(*) FILTER (WHERE e.event_type = 'VIEWED') AS views,
+			ROUND(
+				100.0 * COUNT(*) FILTER (WHERE e.event_type = 'PURCHASED') /
+				NULLIF(COUNT(*) FILTER (WHERE e.event_type = 'VIEWED'), 0),
+				2
+			) AS conversion_rate
+		FROM user_events e
+		WHERE e.category_id IS NOT NULL
+		GROUP BY e.category_id
+		HAVING COUNT(*) FILTER (WHERE e.event_type = 'VIEWED') >= 50
+		ORDER BY conversion_rate DESC NULLS LAST
+		LIMIT 1
+	`).Scan(&top).Error
+	if top.Views > 0 && top.ConversionRate > 0 {
+		s.addAlertUnique(models.RetentionAlert{
+			AlertType:      "HIGH_PERFORMER",
+			Category:       top.CategoryName,
+			DropPercentage: top.ConversionRate,
+			Suggestion: fmt.Sprintf(
+				"%s leads with %.2f%% conversion — replicate its recommendation strategy in weaker categories",
+				top.CategoryName, top.ConversionRate,
+			),
+			Timestamp: time.Now().UTC(),
+		})
+	}
+}
+
+func (s *AIInsightsService) periodicDBInsights(ctx context.Context) {
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.refreshInsightsFromDB()
+		}
+	}
+}
+
+func (s *AIInsightsService) addAlertUnique(alert models.RetentionAlert) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for _, existing := range s.alerts {
+		if existing.AlertType == alert.AlertType && existing.Category == alert.Category {
+			return
+		}
+	}
+	s.alerts = append([]models.RetentionAlert{alert}, s.alerts...)
+	if len(s.alerts) > 50 {
+		s.alerts = s.alerts[:50]
+	}
 }
 
 func (s *AIInsightsService) runRetentionAgent(ctx context.Context) {
@@ -183,19 +283,17 @@ func (s *AIInsightsService) runRetentionAgent(ctx context.Context) {
 	}
 }
 
-func (s *AIInsightsService) addAlert(alert models.RetentionAlert) {
-	s.alertsMu.Lock()
-	s.alerts = append([]models.RetentionAlert{alert}, s.alerts...)
-	if len(s.alerts) > 50 {
-		s.alerts = s.alerts[:50]
-	}
-	s.alertsMu.Unlock()
-}
-
 func (s *AIInsightsService) getAlerts(c *gin.Context) {
 	s.alertsMu.RLock()
-	defer s.alertsMu.RUnlock()
-	c.JSON(200, s.alerts)
+	if len(s.alerts) == 0 {
+		s.alertsMu.RUnlock()
+		s.refreshInsightsFromDB()
+		s.alertsMu.RLock()
+	}
+	out := make([]models.RetentionAlert, len(s.alerts))
+	copy(out, s.alerts)
+	s.alertsMu.RUnlock()
+	c.JSON(200, out)
 }
 
 func (s *AIInsightsService) sqlAssistant(c *gin.Context) {

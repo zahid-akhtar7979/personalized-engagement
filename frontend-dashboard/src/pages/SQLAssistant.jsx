@@ -41,7 +41,7 @@ export default function SQLAssistant() {
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-2">AI SQL Assistant</h1>
+      <h1 className="text-2xl font-bold mb-2">AI Assistant</h1>
       <p className="text-netflix-muted text-sm mb-6">
         Ask business questions in natural language — get SQL and results instantly
       </p>

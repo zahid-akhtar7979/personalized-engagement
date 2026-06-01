@@ -93,7 +93,7 @@ export default function VoiceSQLAssistant() {
 
   return (
     <div className="max-w-4xl mx-auto">
-      <h1 className="text-2xl font-bold mb-2">AI Voice SQL Assistant</h1>
+      <h1 className="text-2xl font-bold mb-2">AI Voice Assistant</h1>
       <p className="text-netflix-muted text-sm mb-6">
         Speak a business question — we transcribe it, generate safe SQL, run it on PostgreSQL, and read the answer aloud.
       </p>

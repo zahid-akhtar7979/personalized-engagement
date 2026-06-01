@@ -21,17 +21,26 @@ import (
 	gormdb "gorm.io/gorm"
 )
 
-const systemCost = 5000.0
-const avgOrderValue = 75.0
+const (
+	avgOrderValue = 75.0 // modeled average order value (USD); Retailrocket has no price in events
+
+	// ROI assumes only a fraction of observed GMV is attributed to the personalization platform,
+	// and platform cost scales with event volume (infra + processing).
+	personalizationAttribution = 0.08 // 8% of gross merchandise value credited to PEP
+	platformBaseCostUSD        = 75_000.0
+	platformCostPerEventUSD    = 0.015
+)
 
 type AnalyticsEngine struct {
-	log    *zap.Logger
-	db     *gormdb.DB
-	kafka  *kafka.Client
-	writer *kafka.Writer
-	redis  *redisclient.Client
-	mu     sync.RWMutex
-	state  struct {
+	log          *zap.Logger
+	db           *gormdb.DB
+	kafka        *kafka.Client
+	writer       *kafka.Writer
+	redis        *redisclient.Client
+	mu           sync.RWMutex
+	refreshMu    sync.Mutex
+	lastRefresh  time.Time
+	state        struct {
 		usersSeen       map[int64]bool
 		returningUsers  map[int64]bool
 		sessionCount    map[int64]int
@@ -70,6 +79,7 @@ func main() {
 	engine.state.sessionCount = make(map[int64]int)
 	engine.state.categoryViews = make(map[int64]int64)
 	engine.state.categoryPurch = make(map[int64]int64)
+	engine.refreshFromDB()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -136,105 +146,149 @@ func (a *AnalyticsEngine) consumeUserEvents(ctx context.Context) {
 }
 
 func (a *AnalyticsEngine) processEvent(ev models.UserEvent) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if a.state.sessionCount[ev.UserID] > 0 {
-		a.state.returningUsers[ev.UserID] = true
-	}
-	a.state.sessionCount[ev.UserID]++
-	a.state.usersSeen[ev.UserID] = true
-
-	switch ev.EventType {
-	case models.EventTypeViewed:
-		a.state.views++
-		a.state.categoryViews[ev.CategoryID]++
-		a.state.recImpressions++
-	case models.EventTypeAddToCart:
-		a.state.addToCart++
-	case models.EventTypePurchased:
-		a.state.purchases++
-		a.state.revenueGain += avgOrderValue
-		a.state.categoryPurch[ev.CategoryID]++
-	}
+	_ = ev
+	a.scheduleRefreshFromDB()
 }
 
-func (a *AnalyticsEngine) recalculate() models.AnalyticsMetrics {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-
-	totalUsers := int64(len(a.state.usersSeen))
-	returning := int64(len(a.state.returningUsers))
-	active := int64(0)
-	for _, count := range a.state.sessionCount {
-		if count > 0 {
-			active++
-		}
+func (a *AnalyticsEngine) scheduleRefreshFromDB() {
+	a.refreshMu.Lock()
+	if time.Since(a.lastRefresh) < 2*time.Second {
+		a.refreshMu.Unlock()
+		return
 	}
+	a.lastRefresh = time.Now()
+	a.refreshMu.Unlock()
+	go a.refreshFromDB()
+}
+
+// refreshFromDB aggregates real metrics from user_events (Retailrocket import + live replay).
+func (a *AnalyticsEngine) refreshFromDB() models.AnalyticsMetrics {
+	type counts struct {
+		TotalUsers int64 `gorm:"column:total_users"`
+		Views      int64 `gorm:"column:views"`
+		Purchases  int64 `gorm:"column:purchases"`
+		AddToCart  int64 `gorm:"column:add_to_cart"`
+	}
+	var c counts
+	err := a.db.Raw(`
+		SELECT
+			COUNT(DISTINCT user_id) AS total_users,
+			COUNT(*) FILTER (WHERE event_type = 'VIEWED') AS views,
+			COUNT(*) FILTER (WHERE event_type = 'PURCHASED') AS purchases,
+			COUNT(*) FILTER (WHERE event_type = 'ADD_TO_CART') AS add_to_cart
+		FROM user_events
+	`).Scan(&c).Error
+	if err != nil {
+		a.log.Warn("analytics db refresh", zap.Error(err))
+	}
+
+	var returningUsers int64
+	_ = a.db.Raw(`
+		SELECT COUNT(*) FROM (
+			SELECT user_id FROM user_events GROUP BY user_id HAVING COUNT(*) > 1
+		) t
+	`).Scan(&returningUsers).Error
+
+	views := c.Views
+	purchases := c.Purchases
+	addToCart := c.AddToCart
+	totalUsers := c.TotalUsers
+	returning := returningUsers
 
 	retentionRate := 0.0
 	if totalUsers > 0 {
 		retentionRate = (float64(returning) / float64(totalUsers)) * 100
 	}
 
+	impressions := views
+	clicks := addToCart + purchases
 	ctr := 0.0
-	if a.state.recImpressions > 0 {
-		ctr = (float64(a.state.recClicks) / float64(a.state.recImpressions)) * 100
+	if impressions > 0 {
+		ctr = (float64(clicks) / float64(impressions)) * 100
+		if ctr > 100 {
+			ctr = 100
+		}
 	}
 
 	conversionRate := 0.0
-	if a.state.views > 0 {
-		conversionRate = (float64(a.state.purchases) / float64(a.state.views)) * 100
+	if views > 0 {
+		conversionRate = (float64(purchases) / float64(views)) * 100
 	}
 
-	engagementScore := float64(a.state.views) + 3*float64(a.state.addToCart) + 5*float64(a.state.purchases)
+	// Engagement index 0–100: composite of retention, CTR, and purchase conversion (not a raw event count).
+	ctrComponent := ctr
+	if ctrComponent > 15 {
+		ctrComponent = 15
+	}
+	ctrComponent = (ctrComponent / 15) * 100
 
+	convComponent := conversionRate
+	if convComponent > 5 {
+		convComponent = 5
+	}
+	convComponent = (convComponent / 5) * 100
+
+	engagementScore := retentionRate*0.4 + ctrComponent*0.3 + convComponent*0.3
+	if engagementScore > 100 {
+		engagementScore = 100
+	}
+
+	totalEvents := views + addToCart + purchases
+	grossRevenue := float64(purchases) * avgOrderValue
+	revenueGain := grossRevenue * personalizationAttribution // attributed incremental revenue
+	systemCost := platformBaseCostUSD + float64(totalEvents)*platformCostPerEventUSD
 	roi := 0.0
 	if systemCost > 0 {
-		roi = ((a.state.revenueGain - systemCost) / systemCost) * 100
+		roi = ((revenueGain - systemCost) / systemCost) * 100
 	}
 
-	return models.AnalyticsMetrics{
+	metrics := models.AnalyticsMetrics{
 		RetentionRate:   retentionRate,
 		CTR:             ctr,
 		ConversionRate:  conversionRate,
 		EngagementScore: engagementScore,
 		ROIPercentage:   roi,
-		ActiveUsers:     active,
+		ActiveUsers:     totalUsers,
 		TotalUsers:      totalUsers,
 		ReturningUsers:  returning,
-		RecClicks:       a.state.recClicks,
-		RecImpressions:  a.state.recImpressions,
-		Purchases:       a.state.purchases,
-		Views:           a.state.views,
-		RevenueGain:     a.state.revenueGain,
+		RecClicks:       clicks,
+		RecImpressions:  impressions,
+		Purchases:       purchases,
+		Views:           views,
+		RevenueGain:     revenueGain,
 		SystemCost:      systemCost,
 		UpdatedAt:       time.Now().UTC(),
 	}
+
+	a.mu.Lock()
+	a.metrics = metrics
+	a.mu.Unlock()
+	return metrics
 }
 
 func (a *AnalyticsEngine) periodicPublish(ctx context.Context) {
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
+	var lastHistory time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			metrics := a.recalculate()
-			a.mu.Lock()
-			a.metrics = metrics
-			a.mu.Unlock()
-
+			metrics := a.refreshFromDB()
 			_ = a.redis.SetJSON(ctx, "analytics:global", metrics, 5*time.Minute)
 			_ = kafka.PublishWithRetry(ctx, a.writer, "global", metrics, a.log, 3)
 
-			_ = a.db.Create(&models.AnalyticsMetricRecord{
-				RetentionRate: metrics.RetentionRate, CTR: metrics.CTR,
-				ConversionRate: metrics.ConversionRate, EngagementScore: metrics.EngagementScore,
-				ROIPercentage: metrics.ROIPercentage, ActiveUsers: metrics.ActiveUsers,
-				RecordedAt: metrics.UpdatedAt,
-			}).Error
+			if metrics.Views > 0 && time.Since(lastHistory) >= 60*time.Second {
+				_ = a.db.Create(&models.AnalyticsMetricRecord{
+					RetentionRate: metrics.RetentionRate, CTR: metrics.CTR,
+					ConversionRate: metrics.ConversionRate, EngagementScore: metrics.EngagementScore,
+					ROIPercentage: metrics.ROIPercentage, ActiveUsers: metrics.ActiveUsers,
+					RecordedAt: metrics.UpdatedAt,
+				}).Error
+				lastHistory = time.Now()
+			}
 		}
 	}
 }
@@ -243,8 +297,8 @@ func (a *AnalyticsEngine) getAnalytics(c *gin.Context) {
 	a.mu.RLock()
 	metrics := a.metrics
 	a.mu.RUnlock()
-	if metrics.UpdatedAt.IsZero() {
-		metrics = a.recalculate()
+	if metrics.Views == 0 && metrics.TotalUsers == 0 {
+		metrics = a.refreshFromDB()
 	}
 	c.JSON(200, metrics)
 }
@@ -252,5 +306,28 @@ func (a *AnalyticsEngine) getAnalytics(c *gin.Context) {
 func (a *AnalyticsEngine) getHistory(c *gin.Context) {
 	var records []models.AnalyticsMetricRecord
 	a.db.Order("recorded_at desc").Limit(50).Find(&records)
-	c.JSON(200, records)
+
+	out := make([]gin.H, 0, len(records))
+	for i := len(records) - 1; i >= 0; i-- {
+		r := records[i]
+		out = append(out, gin.H{
+			"retentionRate":   r.RetentionRate,
+			"ctr":             r.CTR,
+			"conversionRate":  r.ConversionRate,
+			"engagementScore": r.EngagementScore,
+			"roiPercentage":   r.ROIPercentage,
+			"activeUsers":     r.ActiveUsers,
+			"recordedAt":      r.RecordedAt,
+		})
+	}
+	if len(out) == 0 {
+		m := a.refreshFromDB()
+		out = append(out, gin.H{
+			"retentionRate": m.RetentionRate, "ctr": m.CTR,
+			"conversionRate": m.ConversionRate, "engagementScore": m.EngagementScore,
+			"roiPercentage": m.ROIPercentage, "activeUsers": m.ActiveUsers,
+			"recordedAt": m.UpdatedAt,
+		})
+	}
+	c.JSON(200, out)
 }
