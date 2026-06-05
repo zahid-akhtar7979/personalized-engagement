@@ -1,0 +1,53 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: engagement
+  namespace: pep-sit
+  labels:
+    app: engagement
+    environment: sit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: engagement
+  template:
+    metadata:
+      labels:
+        app: engagement
+        environment: sit
+    spec:
+      containers:
+        - name: engagement
+          image: ghcr.io/your-org/pep/engagement:sit
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8083
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: engagement-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

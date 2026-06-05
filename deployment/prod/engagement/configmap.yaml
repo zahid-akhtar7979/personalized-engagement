@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: engagement-config
+  namespace: pep-prod
+  labels:
+    app: engagement
+    environment: prod
+data:
+  PEP_PORT: "8083"
+  PEP_KAFKA_BROKERS: "pep-kafka.pep-prod.svc.cluster.local:9092"
+  PEP_REDIS_ADDR: "pep-redis.pep-prod.svc.cluster.local:6379"

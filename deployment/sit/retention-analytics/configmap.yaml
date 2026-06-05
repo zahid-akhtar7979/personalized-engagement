@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: retention-analytics-config
+  namespace: pep-sit
+  labels:
+    app: retention-analytics
+    environment: sit
+data:
+  PEP_PORT: "8084"
+  PEP_KAFKA_BROKERS: "pep-kafka.pep-sit.svc.cluster.local:9092"
+  PEP_REDIS_ADDR: "pep-redis.pep-sit.svc.cluster.local:6379"

@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: retention-analytics
+  namespace: pep-prod
+  labels:
+    app: retention-analytics
+    environment: prod
+spec:
+  type: ClusterIP
+  selector:
+    app: retention-analytics
+  ports:
+    - name: http
+      port: 8084
+      targetPort: http
+      protocol: TCP

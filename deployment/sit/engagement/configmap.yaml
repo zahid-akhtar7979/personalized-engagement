@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: engagement-config
+  namespace: pep-sit
+  labels:
+    app: engagement
+    environment: sit
+data:
+  PEP_PORT: "8083"
+  PEP_KAFKA_BROKERS: "pep-kafka.pep-sit.svc.cluster.local:9092"
+  PEP_REDIS_ADDR: "pep-redis.pep-sit.svc.cluster.local:6379"

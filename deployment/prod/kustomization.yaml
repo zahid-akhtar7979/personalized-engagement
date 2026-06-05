@@ -1,0 +1,49 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pep-prod
+
+resources:
+  - namespace.yaml
+  - shared/configmap.yaml
+  - shared/secret.yaml
+  - dataset-replay/configmap.yaml
+  - dataset-replay/secret.yaml
+  - dataset-replay/pvc.yaml
+  - dataset-replay/service.yaml
+  - dataset-replay/deployment.yaml
+  - recommendation/configmap.yaml
+  - recommendation/secret.yaml
+  - recommendation/service.yaml
+  - recommendation/deployment.yaml
+  - engagement/configmap.yaml
+  - engagement/secret.yaml
+  - engagement/service.yaml
+  - engagement/deployment.yaml
+  - retention-analytics/configmap.yaml
+  - retention-analytics/secret.yaml
+  - retention-analytics/service.yaml
+  - retention-analytics/deployment.yaml
+  - ai-insights/configmap.yaml
+  - ai-insights/secret.yaml
+  - ai-insights/service.yaml
+  - ai-insights/deployment.yaml
+  - frontend/configmap.yaml
+  - frontend/secret.yaml
+  - frontend/service.yaml
+  - frontend/deployment.yaml
+  - frontend/ingress.yaml
+
+images:
+  - name: ghcr.io/your-org/pep/dataset-replay
+    newTag: prod
+  - name: ghcr.io/your-org/pep/recommendation
+    newTag: prod
+  - name: ghcr.io/your-org/pep/engagement
+    newTag: prod
+  - name: ghcr.io/your-org/pep/retention-analytics
+    newTag: prod
+  - name: ghcr.io/your-org/pep/ai-insights
+    newTag: prod
+  - name: ghcr.io/your-org/pep/frontend
+    newTag: prod

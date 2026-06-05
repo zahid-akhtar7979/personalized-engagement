@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dataset-replay-config
+  namespace: pep-sit
+  labels:
+    app: dataset-replay
+    environment: sit
+data:
+  PEP_PORT: "8081"
+  PEP_KAFKA_BROKERS: "pep-kafka.pep-sit.svc.cluster.local:9092"
+  PEP_EVENTS_CSV_PATH: "/data/events.csv"

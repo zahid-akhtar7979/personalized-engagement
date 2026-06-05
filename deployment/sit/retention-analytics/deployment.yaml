@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retention-analytics
+  namespace: pep-sit
+  labels:
+    app: retention-analytics
+    environment: sit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: retention-analytics
+  template:
+    metadata:
+      labels:
+        app: retention-analytics
+        environment: sit
+    spec:
+      containers:
+        - name: retention-analytics
+          image: ghcr.io/your-org/pep/retention-analytics:sit
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8084
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: retention-analytics-config
+            - secretRef:
+                name: retention-analytics-secret
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 25
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3

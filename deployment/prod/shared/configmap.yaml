@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pep-shared-config
+  namespace: pep-prod
+  labels:
+    app.kubernetes.io/part-of: personalized-engagement
+    environment: prod
+data:
+  PEP_KAFKA_BROKERS: "pep-kafka.pep-prod.svc.cluster.local:9092"
+  PEP_REDIS_ADDR: "pep-redis.pep-prod.svc.cluster.local:6379"
+  PEP_OPENAI_MODEL: "gpt-4o-mini"
+  PEP_USE_MOCK_AI: "false"
+  PEP_EVENTS_CSV_PATH: "/data/events.csv"
+  IMAGE_REGISTRY: "ghcr.io/your-org/pep"
+  IMAGE_TAG: "prod"

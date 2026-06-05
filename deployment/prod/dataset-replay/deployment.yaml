@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dataset-replay
+  namespace: pep-prod
+  labels:
+    app: dataset-replay
+    environment: prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dataset-replay
+  template:
+    metadata:
+      labels:
+        app: dataset-replay
+        environment: prod
+    spec:
+      containers:
+        - name: dataset-replay
+          image: ghcr.io/your-org/pep/dataset-replay:prod
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: dataset-replay-config
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          volumeMounts:
+            - name: events-data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: events-data
+          persistentVolumeClaim:
+            claimName: dataset-replay-data
