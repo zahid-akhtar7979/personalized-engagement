@@ -20,8 +20,8 @@ bin/
 .DS_Store
 
 # Data (download full Retailrocket dataset separately)
-data/events.csv.full
-data/*.zip
+fallback-data/events.csv.full
+fallback-data/*.zip
 
 # Logs
 *.log

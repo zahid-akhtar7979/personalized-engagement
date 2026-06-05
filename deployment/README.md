@@ -111,7 +111,7 @@ Repeat for `retention-analytics-secret` and shared secrets as needed.
 kubectl apply -k deployment/sit/
 
 # 4. Load Retailrocket events.csv for dataset-replay (after PVC is bound)
-kubectl -n pep-sit cp ./data/events.csv dataset-replay-<pod-id>:/data/events.csv
+kubectl -n pep-sit cp ./fallback-data/events.csv dataset-replay-<pod-id>:/data/events.csv
 
 # 5. Verify
 kubectl -n pep-sit get pods,svc,ingress

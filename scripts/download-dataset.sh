@@ -2,7 +2,7 @@
 # Download Retailrocket Ecommerce Dataset from Kaggle
 # Requires: pip install kaggle, ~/.kaggle/kaggle.json configured
 set -e
-DATA_DIR="$(dirname "$0")/../data"
+DATA_DIR="$(dirname "$0")/../fallback-data"
 mkdir -p "$DATA_DIR"
 
 echo "Downloading Retailrocket dataset..."

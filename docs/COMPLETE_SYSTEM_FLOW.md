@@ -124,7 +124,7 @@ Loads configuration via **Viper** with prefix `PEP_`:
 | `PEP_KAFKA_BROKERS` | `kafka:9092` | All Kafka services |
 | `PEP_POSTGRES_DSN` | postgres connection string | recommendation, retention, ai |
 | `PEP_REDIS_ADDR` | `redis:6379` | engagement, retention, ai |
-| `PEP_EVENTS_CSV_PATH` | `/data/events.csv` | dataset-replay |
+| `PEP_EVENTS_CSV_PATH` | `/import-data/events.csv` (Compose), `./fallback-data/events.csv` (local) | dataset-replay |
 | `PEP_USE_MOCK_AI` | `true` | ai-insights |
 | `OPENAI_API_KEY` | empty | ai-insights (optional) |
 
@@ -357,7 +357,7 @@ Max **100** items retained (newest first).
 
 ### 7.2 CSV Loading Details
 
-- Reads file at `PEP_EVENTS_CSV_PATH` (Docker: `/data/events.csv` mounted from `./data`).
+- Reads file at `PEP_EVENTS_CSV_PATH` (Docker: `/import-data/events.csv` from `DATA_IMPORT_PATH`; local fallback: `./fallback-data/events.csv`).
 - First row = header map (case-insensitive column names).
 - Each data row → `UserEvent` with fresh `uuid` as `eventId`.
 - Sets `state.Total` = number of parsed events.

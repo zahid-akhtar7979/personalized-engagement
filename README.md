@@ -73,6 +73,7 @@ flowchart LR
 ├── frontend-dashboard/             # React Netflix-style UI
 ├── pkg/                            # Shared config, kafka, models, redis
 ├── migrations/                     # schema.sql + load-data.sql (Retailrocket import)
+├── fallback-data/                  # Sample CSVs + Kaggle download target (not used by Compose by default)
 └── docker-compose.yml
 ```
 
@@ -129,7 +130,9 @@ docker compose up --build -d
 
 ## Dataset Setup (Retailrocket — real PostgreSQL data)
 
-Place the full [Retailrocket dataset](https://www.kaggle.com/retailrocket/ecommerce-dataset) CSV files on your host:
+The repo includes **`fallback-data/`** with small demo CSVs (for `make replay` and offline testing). Docker Compose does **not** use that folder by default — it mounts **`DATA_IMPORT_PATH`** instead.
+
+Place the full [Retailrocket dataset](https://www.kaggle.com/retailrocket/ecommerce-dataset) CSV files on your host (or run `scripts/download-dataset.sh` to populate `fallback-data/` and set `DATA_IMPORT_PATH` accordingly):
 
 ```
 /Users/zahidakhtar/Documents/data/   (or set DATA_IMPORT_PATH in .env)
@@ -289,7 +292,7 @@ Schema auto-applied via Docker init scripts in `migrations/`.
 | `PEP_KAFKA_BROKERS` | kafka:29092 | Kafka broker list |
 | `PEP_POSTGRES_DSN` | (see .env.example) | PostgreSQL connection |
 | `PEP_REDIS_ADDR` | redis:6379 | Redis address |
-| `PEP_EVENTS_CSV_PATH` | /data/events.csv | Replay CSV path |
+| `PEP_EVENTS_CSV_PATH` | `/import-data/events.csv` (Compose) or `./fallback-data/events.csv` (local) | Replay CSV path |
 | `PEP_USE_MOCK_AI` | true | Use rule-based SQL mock |
 | `OPENAI_API_KEY` | — | Optional OpenAI key |
 

@@ -20,7 +20,7 @@ infra:
 	docker compose up -d zookeeper kafka postgres redis
 
 replay:
-	PEP_PORT=8081 PEP_KAFKA_BROKERS=localhost:9092 PEP_EVENTS_CSV_PATH=./data/events.csv \
+	PEP_PORT=8081 PEP_KAFKA_BROKERS=localhost:9092 PEP_EVENTS_CSV_PATH=./fallback-data/events.csv \
 		go run ./services/dataset-replay-service
 
 recommendation:
